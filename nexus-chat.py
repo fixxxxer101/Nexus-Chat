@@ -30,6 +30,7 @@ import fcntl
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -465,6 +466,51 @@ def propose_memories(store, chat, model):
     return added
 
 
+# ------------------------------------------------- Ollama controller
+
+def service_state():
+    """'active', 'inactive', or whatever systemctl reports for the
+    Ollama service."""
+    try:
+        r = subprocess.run(["systemctl", "is-active", "ollama"],
+                           capture_output=True, text=True, timeout=4)
+        return r.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def ctl_probe():
+    """One controller snapshot: service state, loaded models (with
+    the RAM they hold), installed models."""
+    snap = {"service": service_state(), "loaded": None,
+            "installed": None}
+    try:
+        snap["loaded"] = api_get("/api/ps").get("models", [])
+    except Exception:
+        snap["loaded"] = None
+    try:
+        snap["installed"] = api_get("/api/tags").get("models", [])
+    except Exception:
+        snap["installed"] = None
+    return snap
+
+
+def run_ctl(args):
+    """Run a service control command via passwordless sudo
+    (sudo -n: never prompts; failure shows in the panel)."""
+    try:
+        r = subprocess.run(["sudo", "-n"] + args, capture_output=True,
+                           text=True, timeout=20)
+        out = (r.stderr or r.stdout or "").strip().splitlines()
+        return r.returncode == 0, (out[0] if out else "")
+    except Exception as e:
+        return False, str(e)
+
+
+def gb(nbytes):
+    return "%.1f GB" % (nbytes / 1e9)
+
+
 # ---------------------------------------------------------------- GUI
 
 import tkinter as tk
@@ -521,6 +567,7 @@ class RoundedButton(tk.Canvas):
         self._command = command
         self._kind = kind
         self._fg = None
+        self._enabled = True
         self._state = "normal"
         self.bind("<Configure>", lambda e: self._draw())
         self.bind("<Enter>", lambda e: self._set_state("hover"))
@@ -530,11 +577,21 @@ class RoundedButton(tk.Canvas):
         self.bind("<ButtonRelease-1>", self._release)
         self._draw()
 
+    def set_enabled(self, enabled):
+        self._enabled = bool(enabled)
+        self._state = "normal"
+        self.configure(cursor="hand2" if enabled else "arrow")
+        self._draw()
+
     def _set_state(self, state):
+        if not self._enabled:
+            return
         self._state = state
         self._draw()
 
     def _release(self, e):
+        if not self._enabled:
+            return
         inside = (0 <= e.x <= self.winfo_width() and
                   0 <= e.y <= self.winfo_height())
         self._set_state("hover" if inside else "normal")
@@ -549,7 +606,9 @@ class RoundedButton(tk.Canvas):
         if h <= 1:
             h = int(self.cget("height"))
         fill, hover, press, outline, textcol = self.KINDS[self._kind]
-        if self._state == "hover":
+        if not self._enabled:
+            fill, outline, textcol = PANEL2, BORDER, GREEN_FAINT
+        elif self._state == "hover":
             fill = hover
         elif self._state == "press":
             fill = press
@@ -625,6 +684,7 @@ class App:
         self.think = tk.BooleanVar(value=bool(self.store.settings.get(
             "think", False)))
         self._at_bottom = True
+        self._ctl = None               # Ollama controller panel state
 
         root.title(APP_NAME)
         root.geometry("1040x700")
@@ -658,6 +718,10 @@ class App:
                                        command=self._toggle_think)
         self.think_btn.pack(side="right", padx=8, pady=10)
         self._paint_think_btn()
+        RoundedButton(head, text="Ollama", kind="ghost",
+                      font=(FONT, 10, "bold"),
+                      command=self.open_controller).pack(side="right",
+                                                         pady=10)
         self._model_names = [self.model.get()]
         self.model_btn = RoundedButton(head, text=self.model.get(),
                                        kind="ghost", font=(FONT, 10),
@@ -1064,6 +1128,227 @@ class App:
         self.root.destroy()
 
     # ---- memory window -------------------------------------------------
+    # ---- Ollama controller panel --------------------------------
+    # A window inside Nexus Chat (the header's Ollama button): live
+    # service status, the loaded model and the RAM it holds, and
+    # Start / Stop / Unload controls. Stop frees ALL the RAM Ollama
+    # holds; Unload frees just the model's.
+
+    def open_controller(self):
+        tk = self.tk
+        if self._ctl is not None:
+            try:
+                self._ctl["win"].deiconify()
+                self._ctl["win"].lift()
+                return
+            except Exception:
+                self._ctl = None
+        win = tk.Toplevel(self.root)
+        win.title("Ollama Controller")
+        win.geometry("500x540")
+        win.minsize(440, 480)
+        win.configure(bg=BG)
+        ctl = {"win": win, "queue": queue.Queue(), "snap": None,
+               "acting": False, "poll_id": None, "drain_id": None}
+        self._ctl = ctl
+
+        head = tk.Frame(win, bg=PANEL, height=54)
+        head.pack(side="top", fill="x")
+        head.pack_propagate(False)
+        tk.Label(head, text="OLLAMA CONTROLLER", bg=PANEL, fg=GREEN,
+                 font=(FONT, 13, "bold")).pack(side="left", padx=14,
+                                               pady=14)
+        ctl["pill"] = tk.Label(head, text="● CHECKING", bg=PANEL,
+                               fg=GREEN_DIM, font=(FONT, 10, "bold"))
+        ctl["pill"].pack(side="right", padx=14)
+
+        card = BubbleFrame(win, fill=BUBBLE_BOT,
+                           outline=BUBBLE_BOT_EDGE, bg=BG)
+        card.pack(fill="x", padx=14, pady=(14, 6))
+        tk.Label(card, text="LOADED MODEL", bg=BUBBLE_BOT,
+                 fg=GREEN_DIM, font=(FONT, 8, "bold")).pack(
+                     anchor="w", padx=14, pady=(10, 0))
+        ctl["loaded_lbl"] = tk.Label(card, text="—", bg=BUBBLE_BOT,
+                                     fg=GREEN, font=(FONT, 12, "bold"),
+                                     justify="left", anchor="w")
+        ctl["loaded_lbl"].pack(anchor="w", padx=14, fill="x")
+        ctl["ram_lbl"] = tk.Label(card, text="", bg=BUBBLE_BOT,
+                                  fg=GREEN_DIM, font=(FONT, 10),
+                                  justify="left", anchor="w")
+        ctl["ram_lbl"].pack(anchor="w", padx=14, pady=(0, 10),
+                            fill="x")
+
+        row = tk.Frame(win, bg=BG)
+        row.pack(fill="x", padx=14, pady=8)
+        ctl["start_btn"] = RoundedButton(
+            row, text="Start", kind="primary", font=(FONT, 11, "bold"),
+            padx=18, pady=8,
+            command=lambda: self._ctl_act(
+                ctl, ["systemctl", "start", "ollama"],
+                "Starting Ollama"))
+        ctl["start_btn"].pack(side="left")
+        ctl["stop_btn"] = RoundedButton(
+            row, text="Stop", kind="quiet", font=(FONT, 11, "bold"),
+            padx=18, pady=8,
+            command=lambda: self._ctl_act(
+                ctl, ["systemctl", "stop", "ollama"],
+                "Stopping Ollama"))
+        ctl["stop_btn"].pack(side="left", padx=8)
+        ctl["unload_btn"] = RoundedButton(
+            row, text="Unload model", kind="ghost",
+            font=(FONT, 11, "bold"), padx=18, pady=8,
+            command=lambda: self._ctl_unload(ctl))
+        ctl["unload_btn"].pack(side="left")
+
+        ctl["msg"] = tk.Label(win, text="", bg=BG, fg=ORANGE_DIM,
+                              font=(FONT, 9), justify="left",
+                              anchor="w", wraplength=460)
+        ctl["msg"].pack(fill="x", padx=14)
+
+        tk.Label(win, text="INSTALLED MODELS", bg=BG, fg=GREEN_DIM,
+                 font=(FONT, 8, "bold")).pack(anchor="w", padx=14,
+                                              pady=(10, 2))
+        ctl["models_box"] = tk.Listbox(
+            win, bg=PANEL2, fg=GREEN, bd=0, highlightthickness=1,
+            highlightbackground=BORDER, selectbackground="#17351f",
+            selectforeground=GREEN, font=(FONT, 10),
+            activestyle="none", height=7)
+        ctl["models_box"].pack(fill="both", expand=True, padx=14,
+                               pady=(0, 6))
+        tk.Label(win, text="Stop frees ALL the RAM Ollama holds. "
+                           "Start brings the service back; a model "
+                           "loads on first use. Unload frees the "
+                           "model's RAM but leaves the service "
+                           "running.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
+                 wraplength=460).pack(anchor="w", padx=14,
+                                      pady=(0, 12))
+
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: self._ctl_close(ctl))
+        self._ctl_poll(ctl, 50)
+        self._ctl_drain(ctl)
+
+    def _ctl_close(self, ctl):
+        if self._ctl is not ctl:
+            return
+        self._ctl = None
+        for key in ("poll_id", "drain_id"):
+            if ctl.get(key):
+                try:
+                    self.root.after_cancel(ctl[key])
+                except Exception:
+                    pass
+        try:
+            ctl["win"].destroy()
+        except Exception:
+            pass
+
+    def _ctl_poll(self, ctl, delay):
+        if self._ctl is not ctl:
+            return
+
+        def tick():
+            if self._ctl is not ctl:
+                return
+
+            def work():
+                ctl["queue"].put(("snap", ctl_probe()))
+            threading.Thread(target=work, daemon=True).start()
+            self._ctl_poll(ctl, 2000)
+        ctl["poll_id"] = self.root.after(delay, tick)
+
+    def _ctl_drain(self, ctl):
+        if self._ctl is not ctl:
+            return
+        try:
+            while True:
+                kind, payload = ctl["queue"].get_nowait()
+                if kind == "snap":
+                    self._ctl_apply(ctl, payload)
+                elif kind == "acted":
+                    ok, err = payload
+                    ctl["acting"] = False
+                    if not ok and err:
+                        ctl["msg"].configure(
+                            text="Command failed: %s" % err)
+                    self._ctl_poll(ctl, 50)
+        except queue.Empty:
+            pass
+        ctl["drain_id"] = self.root.after(
+            100, lambda: self._ctl_drain(ctl))
+
+    def _ctl_apply(self, ctl, snap):
+        if self._ctl is not ctl:
+            return
+        ctl["snap"] = snap
+        svc = snap["service"]
+        loaded = snap["loaded"]
+        if svc == "active" and loaded is not None:
+            ctl["pill"].configure(text="● RUNNING", fg=GREEN)
+        elif svc == "active":
+            ctl["pill"].configure(text="● STARTING", fg=ORANGE)
+        else:
+            ctl["pill"].configure(text="● STOPPED", fg=ERROR)
+            loaded = []
+        if loaded:
+            ctl["loaded_lbl"].configure(
+                text=", ".join(m["name"] for m in loaded))
+            ctl["ram_lbl"].configure(
+                text="Holding %s of RAM" %
+                gb(sum(m.get("size", 0) for m in loaded)))
+        else:
+            ctl["loaded_lbl"].configure(text="No model loaded")
+            ctl["ram_lbl"].configure(text="RAM is free")
+        acting = ctl["acting"]
+        ctl["start_btn"].set_enabled(svc != "active" and not acting)
+        ctl["stop_btn"].set_enabled(svc == "active" and not acting)
+        ctl["unload_btn"].set_enabled(bool(loaded) and not acting)
+        ctl["models_box"].delete(0, "end")
+        for m in (snap["installed"] or []):
+            ctl["models_box"].insert(
+                "end", "%s   (%s)" % (m["name"], gb(m.get("size", 0))))
+
+    def _ctl_act(self, ctl, args, verb):
+        if self._ctl is not ctl or ctl["acting"]:
+            return
+        ctl["acting"] = True
+        ctl["msg"].configure(text="%s…" % verb)
+        if ctl["snap"]:
+            self._ctl_apply(ctl, ctl["snap"])
+
+        def work():
+            ok, err = run_ctl(args)
+            ctl["queue"].put(("acted", (ok, err)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ctl_unload(self, ctl):
+        if self._ctl is not ctl or ctl["acting"]:
+            return
+        loaded = (ctl["snap"] or {}).get("loaded") or []
+        if not loaded:
+            return
+        ctl["acting"] = True
+        ctl["msg"].configure(text="Unloading model…")
+        self._ctl_apply(ctl, ctl["snap"])
+        names = [m["name"] for m in loaded]
+
+        def work():
+            err = ""
+            for name in names:
+                try:
+                    req = urllib.request.Request(
+                        OLLAMA + "/api/generate",
+                        data=json.dumps({"model": name,
+                                         "keep_alive": 0}).encode(),
+                        headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        r.read()
+                except Exception as e:
+                    err = str(e)
+            ctl["queue"].put(("acted", (not err, err)))
+        threading.Thread(target=work, daemon=True).start()
+
     def open_memory(self):
         tk = self.tk
         win = tk.Toplevel(self.root)

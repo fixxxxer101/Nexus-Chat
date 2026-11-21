@@ -12,10 +12,10 @@
 #
 # No autostart: Nexus Chat opens when you click it, like any app.
 # It needs Ollama running with a model pulled (see README.md) -
-# setup.sh handles the whole stack.
-# Also installs the Ollama Controller (status + Start / Stop /
-# Unload panel) with its own shortcut, so the service can be
-# halted when its RAM is wanted back.
+# setup.sh handles the whole stack. The Ollama controller lives
+# INSIDE Nexus Chat (the header's Ollama button) - status, Start /
+# Stop / Unload, so the service can be halted when its RAM is
+# wanted back.
 # Safe to re-run: files are replaced.
 set -e
 SRC=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -50,39 +50,20 @@ cp "$APP_DIR/nexus-chat.desktop" "$DESKTOP_DIR/nexus-chat.desktop"
 chmod +x "$APP_DIR/nexus-chat.desktop" "$DESKTOP_DIR/nexus-chat.desktop"
 echo "installed desktop shortcut $DESKTOP_DIR/nexus-chat.desktop"
 
-# ---- Ollama Controller -------------------------------------------
-cp "$SRC/ollama-controller.py" "$BIN/ollama-controller.py"
-chmod +x "$BIN/ollama-controller.py"
-echo "installed $BIN/ollama-controller.py"
-
-CTL_ICON_LINE="Icon=utilities-terminal"
-if python3 "$SRC/make_icon.py" power "$ICON_DIR/ollama-controller.png" >/dev/null 2>&1; then
-  CTL_ICON_LINE="Icon=$ICON_DIR/ollama-controller.png"
-  echo "installed icon $ICON_DIR/ollama-controller.png"
-fi
-
-cat > "$APP_DIR/ollama-controller.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Ollama Controller
-Comment=Start / stop Ollama and free its RAM
-Exec=python3 $BIN/ollama-controller.py
-$CTL_ICON_LINE
-Terminal=false
-Categories=Utility;System;
-EOF
-cp "$APP_DIR/ollama-controller.desktop" "$DESKTOP_DIR/ollama-controller.desktop"
-chmod +x "$APP_DIR/ollama-controller.desktop" "$DESKTOP_DIR/ollama-controller.desktop"
-echo "installed desktop shortcut $DESKTOP_DIR/ollama-controller.desktop"
+# The controller briefly shipped as a standalone app; it now
+# lives inside Nexus Chat. Remove the standalone install so there
+# is exactly one controller.
+rm -f "$BIN/ollama-controller.py" \
+      "$APP_DIR/ollama-controller.desktop" \
+      "$DESKTOP_DIR/ollama-controller.desktop" \
+      "$ICON_DIR/ollama-controller.png"
 
 # Mark the launchers trusted so a double-click just opens the app -
 # no untrusted-launcher prompt, no "open with" question.
 if command -v gio >/dev/null 2>&1; then
   gio set "$DESKTOP_DIR/nexus-chat.desktop" metadata::trusted true 2>/dev/null || true
   gio set "$APP_DIR/nexus-chat.desktop" metadata::trusted true 2>/dev/null || true
-  gio set "$DESKTOP_DIR/ollama-controller.desktop" metadata::trusted true 2>/dev/null || true
-  gio set "$APP_DIR/ollama-controller.desktop" metadata::trusted true 2>/dev/null || true
-  echo "marked shortcuts trusted (open with no prompt)"
+  echo "marked shortcut trusted (opens with no prompt)"
 fi
 echo "done. Click the Nexus Chat icon on the desktop to run it;"
-echo "the Ollama Controller icon starts / stops Ollama."
+echo "the Ollama button in its header opens the controller."
