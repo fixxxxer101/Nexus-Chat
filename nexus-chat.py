@@ -54,19 +54,36 @@ COMPRESS_AT = 2700
 KEEP_RAW = 6
 PROPOSE_EVERY = 8          # user turns between memory-proposal passes
 
-# ---- theme: black, green lettering, orange highlight ----
-BG = "#000000"
-PANEL = "#070b07"
-PANEL2 = "#0d130d"
+# ---- theme: black, green lettering, orange highlight -------------
+# Modern pass (2026-11-21): same palette family, softer surfaces,
+# rounded everything. All widgets draw from these constants - the
+# theme is built into the app, not scattered inline.
+BG = "#060806"           # window + chat background (soft black)
+PANEL = "#0b100c"        # header / sidebar surface
+PANEL2 = "#131a13"       # control fill (ghost buttons, fields)
+PANEL2_HOVER = "#1b261b"
+PANEL2_PRESS = "#0d130d"
+BUBBLE_BOT = "#0e1a10"   # assistant message bubble
+BUBBLE_BOT_EDGE = "#1e3325"
+BUBBLE_USER = "#1d1307"  # user message bubble (dark amber)
+BUBBLE_USER_EDGE = "#3d290f"
+BORDER = "#1e3325"       # soft outline for fields and bubbles
 GREEN = "#35ff69"
-GREEN_DIM = "#2ea35c"
+GREEN_DIM = "#3bb96a"
 GREEN_FAINT = "#1c5c36"
 ORANGE = "#ff8c1a"
-ORANGE_DIM = "#a35c10"
-THINK_GREEN = "#57c785"
+ORANGE_HOVER = "#ffa040"
+ORANGE_PRESS = "#e07a08"
+ORANGE_DIM = "#c77414"
+ORANGE_INK = "#170c00"   # text on orange fills
+USER_TEXT = "#ffd9a3"    # user message text (warm, in-family)
+THINK_GREEN = "#5fbf8a"
 ERROR = "#ff5a3c"
 FONT = "DejaVu Sans"
 MONO = "DejaVu Sans Mono"
+RADIUS_BTN = 11
+RADIUS_BUBBLE = 16
+RADIUS_FIELD = 14
 
 SYSTEM_PROMPT = (
     "You are the assistant inside Nexus Chat, a private local chat "
@@ -450,6 +467,145 @@ def propose_memories(store, chat, model):
 
 # ---------------------------------------------------------------- GUI
 
+import tkinter as tk
+import tkinter.font as tkfont
+
+
+def _rounded_points(x0, y0, x1, y1, r):
+    """Polygon points tracing a rounded rectangle; draw with
+    smooth=True for corners with no sharp edges anywhere."""
+    r = max(0, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+    return [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r,
+            x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
+            x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
+
+
+def draw_rounded_rect(canvas, x0, y0, x1, y1, r, **opts):
+    return canvas.create_polygon(_rounded_points(x0, y0, x1, y1, r),
+                                 smooth=True, splinesteps=16, **opts)
+
+
+class RoundedButton(tk.Canvas):
+    """A button with genuinely rounded corners, drawn on a canvas -
+    stock Tk buttons are rectangles and cannot be rounded. Speaks
+    the slice of the tk.Button API this app uses: configure(text=,
+    fg=), pack/place, and a command callback. Hover and press states
+    are drawn, not just coloured."""
+
+    KINDS = {
+        # kind: (fill, hover, press, outline, text colour)
+        "primary": (ORANGE, ORANGE_HOVER, ORANGE_PRESS,
+                    ORANGE, ORANGE_INK),
+        "ghost": (PANEL2, PANEL2_HOVER, PANEL2_PRESS, BORDER, GREEN),
+        "quiet": (PANEL2, PANEL2_HOVER, PANEL2_PRESS,
+                  BORDER, GREEN_DIM),
+    }
+
+    def __init__(self, master, text="", command=None, kind="ghost",
+                 font=None, padx=13, pady=6, radius=RADIUS_BTN, **kw):
+        self._font = tkfont.Font(font=font) if font else tkfont.Font(
+            family=FONT, size=10, weight="bold")
+        self._padx, self._pady = padx, pady
+        self._radius = radius
+        w = self._font.measure(text) + padx * 2 + 2
+        h = self._font.metrics("linespace") + pady * 2 + 2
+        bg = kw.pop("bg", None)
+        if bg is None:
+            try:
+                bg = master.cget("bg")
+            except Exception:
+                bg = BG
+        super().__init__(master, width=w, height=h, bg=bg, bd=0,
+                         highlightthickness=0, cursor="hand2", **kw)
+        self._text = text
+        self._command = command
+        self._kind = kind
+        self._fg = None
+        self._state = "normal"
+        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<Enter>", lambda e: self._set_state("hover"))
+        self.bind("<Leave>", lambda e: self._set_state("normal"))
+        self.bind("<ButtonPress-1>",
+                  lambda e: self._set_state("press"))
+        self.bind("<ButtonRelease-1>", self._release)
+        self._draw()
+
+    def _set_state(self, state):
+        self._state = state
+        self._draw()
+
+    def _release(self, e):
+        inside = (0 <= e.x <= self.winfo_width() and
+                  0 <= e.y <= self.winfo_height())
+        self._set_state("hover" if inside else "normal")
+        if inside and self._command:
+            self._command()
+
+    def _draw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w <= 1:
+            w = int(self.cget("width"))
+        if h <= 1:
+            h = int(self.cget("height"))
+        fill, hover, press, outline, textcol = self.KINDS[self._kind]
+        if self._state == "hover":
+            fill = hover
+        elif self._state == "press":
+            fill = press
+        draw_rounded_rect(self, 1, 1, w - 1, h - 1, self._radius,
+                          fill=fill, outline=outline, width=1)
+        self.create_text(w / 2.0, h / 2.0, text=self._text,
+                         fill=self._fg or textcol, font=self._font)
+
+    def configure(self, **kw):
+        text = kw.pop("text", None)
+        fg = kw.pop("fg", None)
+        if text is not None and text != self._text:
+            self._text = text
+            super().configure(
+                width=self._font.measure(text) + self._padx * 2 + 2,
+                height=self._font.metrics("linespace") +
+                self._pady * 2 + 2)
+        if fg is not None:
+            self._fg = fg
+        if kw:
+            super().configure(**kw)
+        if text is not None or fg is not None:
+            self._draw()
+
+    config = configure
+
+
+class BubbleFrame(tk.Frame):
+    """A frame whose background is a rounded rectangle, drawn on an
+    underlay canvas that sits behind everything packed into it.
+    Children pack in exactly like a plain frame (same pack order,
+    same geometry behaviour); the canvas is placed, never packed,
+    and redraws itself whenever the frame changes size."""
+
+    def __init__(self, master, fill, outline, radius=RADIUS_BUBBLE,
+                 bg=None, **kw):
+        super().__init__(master,
+                         bg=bg if bg is not None else BG, **kw)
+        self._fill = fill
+        self._outline = outline
+        self._radius = radius
+        self._cv = tk.Canvas(self, bg=self.cget("bg"), bd=0,
+                             highlightthickness=0)
+        self._cv.place(x=0, y=0, relwidth=1, relheight=1)
+        self.bind("<Configure>", self._redraw)
+
+    def _redraw(self, _e=None):
+        w, h = self.winfo_width(), self.winfo_height()
+        if w <= 1 or h <= 1:
+            return
+        self._cv.delete("all")
+        draw_rounded_rect(self._cv, 1, 1, w - 1, h - 1, self._radius,
+                          fill=self._fill, outline=self._outline,
+                          width=1)
+
+
 class App:
     def __init__(self, root):
         import tkinter as tk
@@ -485,65 +641,59 @@ class App:
     # ---- layout ------------------------------------------------------
     def _build_layout(self):
         tk = self.tk
-        head = tk.Frame(self.root, bg=PANEL, height=46)
+        head = tk.Frame(self.root, bg=PANEL, height=54)
         head.pack(side="top", fill="x")
         head.pack_propagate(False)
         tk.Label(head, text="NEXUS CHAT", bg=PANEL, fg=GREEN,
-                 font=(FONT, 13, "bold")).pack(side="left", padx=12)
+                 font=(FONT, 14, "bold")).pack(side="left", padx=14)
         self.status = tk.Label(head, text="", bg=PANEL, fg=GREEN_DIM,
                                font=(FONT, 9))
-        self.status.pack(side="right", padx=10)
-        tk.Button(head, text="Memory", bg=PANEL2, fg=GREEN,
-                  activebackground=PANEL, activeforeground=ORANGE,
-                  bd=0, highlightthickness=1, highlightbackground=GREEN_FAINT,
-                  font=(FONT, 10, "bold"), padx=10,
-                  command=self.open_memory).pack(side="right", pady=8)
-        self.think_btn = tk.Button(head, text="", bg=PANEL2, fg=GREEN,
-                                   activebackground=PANEL,
-                                   activeforeground=ORANGE, bd=0,
-                                   highlightthickness=1,
-                                   highlightbackground=GREEN_FAINT,
-                                   font=(FONT, 10, "bold"), padx=10,
-                                   command=self._toggle_think)
-        self.think_btn.pack(side="right", padx=8, pady=8)
+        self.status.pack(side="right", padx=12)
+        RoundedButton(head, text="Memory", kind="ghost",
+                      font=(FONT, 10, "bold"),
+                      command=self.open_memory).pack(side="right",
+                                                     pady=10)
+        self.think_btn = RoundedButton(head, text="", kind="ghost",
+                                       font=(FONT, 10, "bold"),
+                                       command=self._toggle_think)
+        self.think_btn.pack(side="right", padx=8, pady=10)
         self._paint_think_btn()
-        self.model_menu = tk.OptionMenu(head, self.model, self.model.get())
-        self.model_menu.configure(bg=PANEL2, fg=GREEN,
-                                  activebackground=PANEL,
-                                  activeforeground=ORANGE, bd=0,
-                                  highlightthickness=1,
-                                  highlightbackground=GREEN_FAINT,
-                                  font=(FONT, 10))
-        self.model_menu.pack(side="right", pady=8)
+        self._model_names = [self.model.get()]
+        self.model_btn = RoundedButton(head, text=self.model.get(),
+                                       kind="ghost", font=(FONT, 10),
+                                       command=self._model_popup)
+        self.model_btn.pack(side="right", pady=10)
         tk.Label(head, text="Model", bg=PANEL, fg=GREEN_DIM,
-                 font=(FONT, 9)).pack(side="right", padx=(0, 4))
+                 font=(FONT, 9)).pack(side="right", padx=(0, 6))
 
         body = tk.Frame(self.root, bg=BG)
         body.pack(side="top", fill="both", expand=True)
 
-        side = tk.Frame(body, bg=PANEL, width=210)
+        side = tk.Frame(body, bg=PANEL, width=220)
         side.pack(side="left", fill="y")
         side.pack_propagate(False)
-        tk.Button(side, text="+  New Chat", bg=ORANGE, fg="#000000",
-                  activebackground=ORANGE, activeforeground="#000000",
-                  bd=0, font=(FONT, 11, "bold"), pady=4,
-                  command=self.new_chat).pack(fill="x", padx=8, pady=8)
+        RoundedButton(side, text="+  New Chat", kind="primary",
+                      font=(FONT, 11, "bold"), pady=8,
+                      command=self.new_chat).pack(fill="x", padx=10,
+                                                  pady=10)
         self.chat_list = tk.Listbox(
-            side, bg=PANEL, fg=GREEN, selectbackground=ORANGE,
-            selectforeground="#000000", bd=0, highlightthickness=0,
+            side, bg=PANEL, fg=GREEN, selectbackground="#17351f",
+            selectforeground=GREEN, bd=0, highlightthickness=0,
             font=(FONT, 10), activestyle="none")
-        self.chat_list.pack(fill="both", expand=True, padx=4)
+        self.chat_list.pack(fill="both", expand=True, padx=6)
         self.chat_list.bind("<<ListboxSelect>>", self._sidebar_pick)
-        tk.Button(side, text="Delete chat", bg=PANEL2, fg=GREEN_DIM,
-                  activebackground=PANEL, activeforeground=ERROR, bd=0,
-                  font=(FONT, 9), command=self.delete_current
-                  ).pack(fill="x", padx=8, pady=8)
+        RoundedButton(side, text="Delete chat", kind="quiet",
+                      font=(FONT, 9), command=self.delete_current
+                      ).pack(fill="x", padx=10, pady=10)
 
         main = tk.Frame(body, bg=BG)
         main.pack(side="left", fill="both", expand=True)
         self.canvas = tk.Canvas(main, bg=BG, bd=0, highlightthickness=0)
         self.scrollbar = tk.Scrollbar(main, orient="vertical",
-                                      command=self.canvas.yview)
+                                      command=self.canvas.yview,
+                                      bg=PANEL2, troughcolor=BG, bd=0,
+                                      width=11,
+                                      activebackground=GREEN_FAINT)
         self.canvas.configure(yscrollcommand=self._on_scroll)
         self.scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -559,21 +709,46 @@ class App:
 
         bar = tk.Frame(self.root, bg=PANEL)
         bar.pack(side="bottom", fill="x")
-        self.input = tk.Text(bar, height=3, bg=PANEL2, fg=GREEN,
+        field = BubbleFrame(bar, fill=PANEL2, outline=BORDER,
+                            radius=RADIUS_FIELD, bg=PANEL)
+        field.pack(side="left", fill="both", expand=True,
+                   padx=(10, 4), pady=10)
+        self.input = tk.Text(field, height=3, bg=PANEL2, fg=GREEN,
                              insertbackground=ORANGE, bd=0,
-                             highlightthickness=1,
-                             highlightbackground=GREEN_FAINT,
+                             highlightthickness=0,
                              font=(FONT, 11), wrap="word")
-        self.input.pack(side="left", fill="both", expand=True,
-                        padx=8, pady=8)
+        self.input.pack(fill="both", expand=True, padx=10, pady=7)
         self.input.bind("<Return>", self._enter)
         self.input.bind("<Shift-Return>", lambda e: None)
         self.input.focus_set()
-        self.send_btn = tk.Button(bar, text="Send", bg=ORANGE,
-                                  fg="#000000", activebackground=ORANGE,
-                                  bd=0, font=(FONT, 12, "bold"),
-                                  width=7, command=self._send_or_stop)
-        self.send_btn.pack(side="right", padx=8, pady=8)
+        self.send_btn = RoundedButton(bar, text="Send", kind="primary",
+                                      font=(FONT, 12, "bold"),
+                                      padx=22, pady=10,
+                                      command=self._send_or_stop)
+        self.send_btn.pack(side="right", padx=10, pady=10)
+
+    # ---- model picker --------------------------------------------------
+    def _model_popup(self):
+        tk = self.tk
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=GREEN,
+                       activebackground=GREEN_FAINT,
+                       activeforeground=GREEN, bd=0,
+                       font=(FONT, 10))
+        for name in (self._model_names or DEFAULT_MODELS):
+            menu.add_command(
+                label=name,
+                command=lambda n=name: self._pick_model(n))
+        x = self.model_btn.winfo_rootx()
+        y = (self.model_btn.winfo_rooty() +
+             self.model_btn.winfo_height())
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _pick_model(self, name):
+        self.model.set(name)
+        self.model_btn.configure(text=name)
 
     def _paint_think_btn(self):
         if self.think.get():
@@ -660,49 +835,51 @@ class App:
     # ---- rendering ---------------------------------------------------
     def _render_message(self, role, content, thinking=""):
         tk = self.tk
-        frame = tk.Frame(self.flow, bg=BG)
-        frame.pack(fill="x", padx=10, pady=4)
+        user = role == "user"
+        fill = BUBBLE_USER if user else BUBBLE_BOT
+        frame = BubbleFrame(self.flow, fill=fill,
+                            outline=(BUBBLE_USER_EDGE if user
+                                     else BUBBLE_BOT_EDGE),
+                            bg=BG)
+        frame.pack(anchor="e" if user else "w", padx=12, pady=5)
         self.blocks.append(frame)
-        if role == "user":
-            tk.Label(frame, text="YOU", bg=BG, fg=ORANGE,
-                     font=(FONT, 9, "bold")).pack(anchor="w")
-            accent = ORANGE
-        else:
-            tk.Label(frame, text="NEXUS", bg=BG, fg=GREEN,
-                     font=(FONT, 9, "bold")).pack(anchor="w")
-            accent = GREEN
+        tk.Label(frame, text="YOU" if user else "NEXUS", bg=fill,
+                 fg=ORANGE if user else GREEN,
+                 font=(FONT, 8, "bold")).pack(anchor="w", padx=12,
+                                              pady=(8, 0))
         block = {"frame": frame, "thinking_lbl": None,
                  "thinking_head": None, "open": False}
         self.block_objs.append(block)
         if thinking:
             self._add_thinking(block, thinking)
-        lbl = tk.Label(frame, text=content, bg=BG, fg=accent,
+        lbl = tk.Label(frame, text=content, bg=fill,
+                       fg=USER_TEXT if user else GREEN,
                        font=(FONT, 11), justify="left", anchor="w",
                        wraplength=600)
-        lbl.pack(fill="x", anchor="w")
+        lbl.pack(fill="x", anchor="w", padx=12, pady=(2, 9))
         self._wrap_labels.append(lbl)
         block["content_lbl"] = lbl
         return block
 
     def _add_thinking(self, block, text):
         tk = self.tk
-        head = tk.Label(block["frame"], text="▸ Thinking", bg=BG,
-                        fg=ORANGE_DIM, font=(FONT, 9, "italic"),
-                        cursor="hand2")
+        head = tk.Label(block["frame"], text="▸ Thinking",
+                        bg=BUBBLE_BOT, fg=ORANGE_DIM,
+                        font=(FONT, 9, "italic"), cursor="hand2")
         if block.get("content_lbl") is not None:
             # streaming: the answer label already exists - the
             # thinking header belongs ABOVE it, not below
-            head.pack(anchor="w", before=block["content_lbl"])
+            head.pack(anchor="w", padx=12, before=block["content_lbl"])
         else:
-            head.pack(anchor="w")
-        lbl = tk.Label(block["frame"], text=text, bg=BG,
+            head.pack(anchor="w", padx=12)
+        lbl = tk.Label(block["frame"], text=text, bg=BUBBLE_BOT,
                        fg=THINK_GREEN, font=(FONT, 10, "italic"),
                        justify="left", anchor="w", wraplength=600)
 
         def toggle(_e=None, b=block):
             b["open"] = not b["open"]
             if b["open"]:
-                b["thinking_lbl"].pack(fill="x", anchor="w",
+                b["thinking_lbl"].pack(fill="x", anchor="w", padx=12,
                                        before=b["content_lbl"])
                 b["thinking_head"].configure(text="▾ Thinking")
             else:
@@ -877,14 +1054,10 @@ class App:
             return
         if not self.busy:
             self.status.configure(text="Ollama ready", fg=GREEN_DIM)
-        menu = self.model_menu["menu"]
-        menu.delete(0, "end")
-        for name in (names or DEFAULT_MODELS):
-            menu.add_command(
-                label=name,
-                command=lambda n=name: self.model.set(n))
+        self._model_names = names or DEFAULT_MODELS
         if names and self.model.get() not in names:
             self.model.set(names[0])
+        self.model_btn.configure(text=self.model.get())
 
     def _on_close(self):
         self.store.save_settings()
@@ -933,9 +1106,10 @@ class App:
                 new_entry.delete(0, "end")
                 reload_entries()
 
-        tk.Button(addrow, text="Remember", bg=ORANGE, fg="#000000",
-                  activebackground=ORANGE, bd=0, font=(FONT, 10, "bold"),
-                  command=add_manual).pack(side="right", padx=(6, 0))
+        RoundedButton(addrow, text="Remember", kind="primary",
+                      font=(FONT, 10, "bold"),
+                      command=add_manual).pack(side="right",
+                                               padx=(6, 0))
 
         def del_entry():
             sel = entries.curselection()
@@ -944,10 +1118,10 @@ class App:
                 store.save_memory()
                 reload_entries()
 
-        tk.Button(win, text="Delete selected", bg=PANEL2, fg=GREEN_DIM,
-                  activebackground=PANEL, activeforeground=ERROR, bd=0,
-                  font=(FONT, 9),
-                  command=del_entry).pack(anchor="w", padx=10, pady=2)
+        RoundedButton(win, text="Delete selected", kind="quiet",
+                      font=(FONT, 9),
+                      command=del_entry).pack(anchor="w", padx=10,
+                                              pady=4)
         reload_entries()
 
         tk.Label(win, text="PROPOSED BY THE MODEL — nothing is kept "
@@ -986,13 +1160,12 @@ class App:
                 store.save_memory()
                 reload_pending()
 
-        tk.Button(prow, text="Approve", bg=ORANGE, fg="#000000",
-                  activebackground=ORANGE, bd=0, font=(FONT, 10, "bold"),
-                  command=approve).pack(side="left")
-        tk.Button(prow, text="Reject", bg=PANEL2, fg=GREEN_DIM,
-                  activebackground=PANEL, activeforeground=ERROR, bd=0,
-                  font=(FONT, 10),
-                  command=reject).pack(side="left", padx=6)
+        RoundedButton(prow, text="Approve", kind="primary",
+                      font=(FONT, 10, "bold"),
+                      command=approve).pack(side="left")
+        RoundedButton(prow, text="Reject", kind="quiet",
+                      font=(FONT, 10),
+                      command=reject).pack(side="left", padx=6)
         reload_pending()
 
         tk.Label(win, text="THIS CHAT — WHAT THE MODEL CARRIES "

@@ -27,6 +27,13 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   shows exactly what the model currently carries for the open chat.
 - **Streaming replies**, model picker (Qwen3 4B default, 1.7B fast
   mode), Stop button mid-generation.
+- **Modern rounded theme.** Canvas-drawn rounded buttons and
+  chat-bubble messages — no sharp corners anywhere.
+- **Ollama Controller** (installed alongside): a small panel that
+  shows whether Ollama is running, which model is loaded and how
+  much RAM it holds, with **Start**, **Stop** (frees ALL its RAM)
+  and **Unload model** buttons. Its own desktop icon — a power
+  symbol.
 
 ## Setup on the Pi
 
@@ -46,6 +53,7 @@ Then click the **Nexus Chat** icon on the desktop.
 ## Where things live
 
 - App: `~/.local/bin/nexus-chat.py`
+- Ollama Controller: `~/.local/bin/ollama-controller.py`
 - Chats, memory, settings: `~/.local/share/nexus-chat/`
 - Error log: `~/.local/state/nexus-chat.log`
 

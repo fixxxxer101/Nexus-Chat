@@ -4,7 +4,9 @@ two green dots and one orange dot. Pure stdlib (no PIL) so it runs
 anywhere Python 3 does - install.sh uses it to render the icon
 locally instead of shipping a binary.
 
-Usage: python3 make_icon.py [output.png]   (default: icon.png)
+Usage: python3 make_icon.py [chat|power] [output.png]
+Two styles: "chat" (the Nexus Chat bubble) and "power" (the
+Ollama Controller power symbol). Default: chat, icon.png.
 Drawn at 1024, box-downsampled to 512 for smooth edges.
 """
 import struct
@@ -61,7 +63,27 @@ def pixel(x, y):
     return base + (255,)
 
 
-def render():
+def pixel_power(x, y):
+    # black app tile
+    if not in_round_rect(x, y, 16, 16, SIZE - 16, SIZE - 16, 200):
+        return CLEAR
+    base = BLACK
+    cx, cy = 512, 540
+    d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+    # ring with a gap at the top where the stem passes through
+    in_gap = y < cy - 100 and abs(x - cx) < 100
+    if 150 <= d <= 202 and not in_gap:
+        base = GREEN
+    # the stem: orange, dropping from above into the ring
+    if in_round_rect(x, y, 478, 262, 546, 560, 34):
+        base = ORANGE
+    return base + (255,)
+
+
+PIXELS = {"chat": pixel, "power": pixel_power}
+
+
+def render(style="chat"):
     rows = []
     step = SIZE // OUT
     for oy in range(OUT):
@@ -72,7 +94,7 @@ def render():
             n = 0
             for dy in range(step):
                 for dx in range(step):
-                    p = pixel(ox * step + dx, oy * step + dy)
+                    p = PIXELS[style](ox * step + dx, oy * step + dy)
                     # un-premultiply-ish: weight by alpha
                     a = p[3] / 255.0
                     acc[0] += p[0] * a
@@ -92,8 +114,8 @@ def render():
     return b"".join(rows)
 
 
-def png_bytes():
-    raw = render()
+def png_bytes(style="chat"):
+    raw = render(style)
 
     def chunk(tag, data):
         c = struct.pack(">I", len(data)) + tag + data
@@ -105,7 +127,11 @@ def png_bytes():
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "icon.png"
+    args = sys.argv[1:]
+    style = "chat"
+    if args and args[0] in PIXELS:
+        style = args.pop(0)
+    out = args[0] if args else "icon.png"
     with open(out, "wb") as f:
-        f.write(png_bytes())
-    print("wrote", out)
+        f.write(png_bytes(style))
+    print("wrote", out, "(%s)" % style)
