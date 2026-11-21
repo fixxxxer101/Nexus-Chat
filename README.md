@@ -30,21 +30,18 @@ machine — no accounts, no cloud, nothing leaves the Pi.
 
 ## Setup on the Pi
 
-1. Install Ollama and pull the models:
+One script does everything — Ollama, the service check, both models,
+and the app — detecting and skipping whatever already exists:
 
-   ```
-   curl -fsSL https://ollama.com/install.sh | sh
-   ollama pull qwen3:4b
-   ollama pull qwen3:1.7b
-   ```
+```
+bash setup.sh
+```
 
-2. Install Nexus Chat:
+Re-running it after a `git pull` is also how you update: only the
+missing pieces happen. (`install.sh` on its own just reinstalls the
+app and its desktop icon.)
 
-   ```
-   bash install.sh
-   ```
-
-3. Click the **Nexus Chat** icon on the desktop.
+Then click the **Nexus Chat** icon on the desktop.
 
 ## Where things live
 
