@@ -149,6 +149,54 @@ def api_chat_once(model, messages, think_off=True):
     return (data.get("message") or {}).get("content", "").strip()
 
 
+class ThinkSplitter:
+    """Splits <think>...</think> spans out of a content stream.
+
+    Some models/templates leak their reasoning into the answer text
+    as literal think tags instead of the API's thinking field. Those
+    spans belong in the collapsible thinking block, not the answer.
+    """
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self):
+        self.in_think = False
+        self.buf = ""
+
+    def _safe_len(self, s, tag):
+        # how much of s cannot be the beginning of tag
+        for k in range(min(len(s), len(tag) - 1), 0, -1):
+            if tag.startswith(s[-k:]):
+                return len(s) - k
+        return len(s)
+
+    def feed(self, text):
+        self.buf += text
+        events = []
+        while True:
+            tag = self.CLOSE if self.in_think else self.OPEN
+            idx = self.buf.find(tag)
+            kind = "thinking" if self.in_think else "content"
+            if idx == -1:
+                n = self._safe_len(self.buf, tag)
+                if n:
+                    events.append((kind, self.buf[:n]))
+                    self.buf = self.buf[n:]
+                break
+            if idx:
+                events.append((kind, self.buf[:idx]))
+            self.buf = self.buf[idx + len(tag):]
+            self.in_think = not self.in_think
+        return events
+
+    def flush(self):
+        if not self.buf:
+            return []
+        kind = "thinking" if self.in_think else "content"
+        out = [(kind, self.buf)]
+        self.buf = ""
+        return out
+
+
 class Streamer:
     """Runs one streaming /api/chat call on a thread; events go to a
     queue as ("thinking", text), ("content", text), ("done", None),
@@ -179,6 +227,7 @@ class Streamer:
             OLLAMA + "/api/chat",
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"})
+        splitter = ThinkSplitter()
         try:
             self._resp = urllib.request.urlopen(req, timeout=120)
             for raw in self._resp:
@@ -195,9 +244,12 @@ class Streamer:
                 if msg.get("thinking"):
                     self.events.put(("thinking", msg["thinking"]))
                 if msg.get("content"):
-                    self.events.put(("content", msg["content"]))
+                    for kind, text in splitter.feed(msg["content"]):
+                        self.events.put((kind, text))
                 if data.get("error"):
                     self.events.put(("error", str(data["error"])))
+            for kind, text in splitter.flush():
+                self.events.put((kind, text))
             self.events.put(("done", None))
         except Exception as e:  # connection refused, closed on stop, ...
             if self.stopped.is_set():
@@ -606,7 +658,12 @@ class App:
         head = tk.Label(block["frame"], text="▸ Thinking", bg=BG,
                         fg=ORANGE_DIM, font=(FONT, 9, "italic"),
                         cursor="hand2")
-        head.pack(anchor="w")
+        if block.get("content_lbl") is not None:
+            # streaming: the answer label already exists - the
+            # thinking header belongs ABOVE it, not below
+            head.pack(anchor="w", before=block["content_lbl"])
+        else:
+            head.pack(anchor="w")
         lbl = tk.Label(block["frame"], text=text, bg=BG,
                        fg=THINK_GREEN, font=(FONT, 10, "italic"),
                        justify="left", anchor="w", wraplength=600)
@@ -656,7 +713,8 @@ class App:
         self.store.settings["model"] = model
         self.store.save_settings()
         block = self._render_message("assistant", "", "")
-        self._cur = {"block": block, "content": "", "thinking": ""}
+        self._cur = {"block": block, "content": "", "thinking": "",
+                     "think_on": bool(self.think.get())}
         ctx = build_context(self.store, chat, model)
         self.streamer = Streamer(model, ctx, self.think.get(), self.events)
         self.busy = True
@@ -669,6 +727,12 @@ class App:
             while True:
                 kind, text = self.events.get_nowait()
                 if kind in ("thinking", "content") and self._cur:
+                    if kind == "thinking" and \
+                            not self._cur.get("think_on", True):
+                        # Thinking is OFF for this reply: never show
+                        # or save reasoning, even if the server
+                        # sends some anyway. OFF means OFF.
+                        continue
                     self._cur[kind] += text
                     block = self._cur["block"]
                     if kind == "thinking":
