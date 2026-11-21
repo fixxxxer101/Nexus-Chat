@@ -75,6 +75,18 @@ SYSTEM_PROMPT = (
     "offline and private."
 )
 
+# Appended to the system prompt whenever the Thinking toggle is OFF.
+# The API flag stops the separate thinking channel, but Qwen3 in
+# no-think mode still narrates step-by-step reasoning inside the
+# answer itself - which to the user IS "it thought anyway". This
+# instruction closes that side: OFF must look off.
+NO_THINK_INSTRUCTION = (
+    "Thinking mode is OFF for your next reply. Do not reason out "
+    "loud: no step-by-step working, no deliberation, no 'let me "
+    "think' or 'let's break this down'. Work it out silently and "
+    "give only the final answer, directly."
+)
+
 COMPRESS_PROMPT = """You maintain the compressed memory of a long conversation.
 
 Below are the current KEY TOPICS notes (may be empty) and the next chunk of the conversation. Produce updated notes.
@@ -229,7 +241,12 @@ class Streamer:
             headers={"Content-Type": "application/json"})
         splitter = ThinkSplitter()
         try:
-            self._resp = urllib.request.urlopen(req, timeout=120)
+            # Local inference is slow: model load + prompt eval can
+            # sit silent for minutes, and a buffered thinking phase
+            # sends nothing until it completes. A chat stream gets a
+            # generous 30-minute read timeout - the Stop button is
+            # the user's way out of a genuinely stuck reply.
+            self._resp = urllib.request.urlopen(req, timeout=1800)
             for raw in self._resp:
                 if self.stopped.is_set():
                     break
@@ -256,6 +273,18 @@ class Streamer:
                 self.events.put(("done", None))
             else:
                 self.events.put(("error", str(e)))
+        finally:
+            # ALWAYS hang up deterministically. If the socket lingers
+            # open, Ollama keeps generating a reply nobody is reading
+            # and pins the Pi's CPU doing it (seen live 2026-11-21:
+            # a timed-out thinking reply ran the runner at 363% CPU
+            # until the service was restarted).
+            try:
+                if self._resp is not None:
+                    self._resp.close()
+            except Exception:
+                pass
+            self._resp = None
 
 
 # ---------------------------------------------------------------- storage
@@ -326,11 +355,13 @@ class Store:
 
 # ---------------------------------------------------------------- context
 
-def build_context(store, chat, model):
+def build_context(store, chat, model, think=True):
     """Assemble the message list the model sees for the next reply:
     system (+ long-term memory) + pinned origin + compressed key
     topics + the raw tail. The full log on disk is never altered."""
     system = SYSTEM_PROMPT
+    if not think:
+        system += "\n\n" + NO_THINK_INSTRUCTION
     entries = store.memory.get("entries") or []
     if entries:
         system += "\n\nLong-term memory about the user:\n" + \
@@ -715,7 +746,8 @@ class App:
         block = self._render_message("assistant", "", "")
         self._cur = {"block": block, "content": "", "thinking": "",
                      "think_on": bool(self.think.get())}
-        ctx = build_context(self.store, chat, model)
+        ctx = build_context(self.store, chat, model,
+                            think=self.think.get())
         self.streamer = Streamer(model, ctx, self.think.get(), self.events)
         self.busy = True
         self.send_btn.configure(text="Stop")
@@ -776,6 +808,12 @@ class App:
                        "Is Ollama running? Start it with:  ollama serve"
                        % error)
             log("stream error: %s" % error)
+            # Show the failure in the chat, not just in the saved
+            # log - an empty reply box teaches the user nothing.
+            try:
+                cur["block"]["content_lbl"].configure(text=content)
+            except Exception:
+                pass
         msg = {"role": "assistant", "content": content,
                "thinking": cur["thinking"]}
         chat["messages"].append(msg)
