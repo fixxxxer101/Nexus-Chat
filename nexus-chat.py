@@ -728,6 +728,13 @@ class App:
         self.model_btn.pack(side="right", pady=10)
         tk.Label(head, text="Model", bg=PANEL, fg=GREEN_DIM,
                  font=(FONT, 9)).pack(side="right", padx=(0, 6))
+        self.prompt_btn = RoundedButton(head, text="", kind="ghost",
+                                        font=(FONT, 10),
+                                        command=self._prompt_popup)
+        self.prompt_btn.pack(side="right", pady=10)
+        tk.Label(head, text="Prompt", bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(side="right", padx=(0, 6))
+        self._refresh_prompt_btn()
 
         body = tk.Frame(self.root, bg=BG)
         body.pack(side="top", fill="both", expand=True)
@@ -813,6 +820,95 @@ class App:
         self.model.set(name)
         self.model_btn.configure(text=name)
 
+    # ---- prompt presets ------------------------------------------
+    # Presets are named system prompts, managed in the System
+    # window and switchable right here in the header, exactly like
+    # models. Picking one copies its text into the working
+    # system_prompt setting, so build_context needs no preset
+    # logic of its own - glass all the way down.
+
+    def _presets(self):
+        return self.store.settings.get("prompt_presets") or []
+
+    def _prompt_label(self):
+        text = (self.store.settings.get("system_prompt") or "").strip()
+        if not text:
+            return "Default"
+        name = self.store.settings.get("prompt_name") or ""
+        for p in self._presets():
+            if p.get("name") == name and \
+                    (p.get("text") or "").strip() == text:
+                return name
+        return "Custom"
+
+    def _refresh_prompt_btn(self):
+        self.prompt_btn.configure(text=self._prompt_label())
+
+    def _prompt_popup(self):
+        tk = self.tk
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=GREEN,
+                       activebackground=GREEN_FAINT,
+                       activeforeground=GREEN, bd=0,
+                       font=(FONT, 10))
+        menu.add_command(label="Default (built-in)",
+                         command=lambda: self._pick_prompt(None))
+        for p in self._presets():
+            menu.add_command(
+                label=p.get("name", "?"),
+                command=lambda n=p.get("name"): self._pick_prompt(n))
+        menu.add_separator()
+        menu.add_command(label="Manage prompts…",
+                         command=self.open_system)
+        x = self.prompt_btn.winfo_rootx()
+        y = (self.prompt_btn.winfo_rooty() +
+             self.prompt_btn.winfo_height())
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _pick_prompt(self, name):
+        if name is None:
+            self.store.settings["system_prompt"] = ""
+            self.store.settings["prompt_name"] = ""
+        else:
+            for p in self._presets():
+                if p.get("name") == name:
+                    self.store.settings["system_prompt"] = \
+                        p.get("text", "")
+                    self.store.settings["prompt_name"] = name
+                    break
+            else:
+                return
+        self.store.save_settings()
+        self._refresh_prompt_btn()
+
+    def _save_preset(self, name, text):
+        name = (name or "").strip()
+        if not name:
+            return False
+        presets = [p for p in self._presets()
+                   if p.get("name") != name]
+        presets.append({"name": name, "text": text})
+        self.store.settings["prompt_presets"] = presets
+        self.store.settings["system_prompt"] = text
+        self.store.settings["prompt_name"] = name
+        self.store.save_settings()
+        self._refresh_prompt_btn()
+        return True
+
+    def _delete_preset(self, name):
+        presets = [p for p in self._presets()
+                   if p.get("name") != name]
+        if len(presets) == len(self._presets()):
+            return False
+        self.store.settings["prompt_presets"] = presets
+        if self.store.settings.get("prompt_name") == name:
+            self.store.settings["prompt_name"] = ""
+        self.store.save_settings()
+        self._refresh_prompt_btn()
+        return True
+
     # ---- system prompt (glass box) -------------------------------
     def open_system(self):
         """See and edit the system prompt, and preview the EXACT
@@ -821,7 +917,7 @@ class App:
         tk = self.tk
         win = tk.Toplevel(self.root)
         win.title("System Prompt")
-        win.geometry("680x640")
+        win.geometry("700x780")
         win.configure(bg=BG)
         tk.Label(win, text="SYSTEM PROMPT", bg=BG, fg=GREEN,
                  font=(FONT, 12, "bold")).pack(anchor="w", padx=12,
@@ -850,7 +946,14 @@ class App:
         def save():
             text = editor.get("1.0", "end").strip()
             self.store.settings["system_prompt"] = text
+            match = ""
+            for p in self._presets():
+                if text and (p.get("text") or "").strip() == text:
+                    match = p.get("name", "")
+                    break
+            self.store.settings["prompt_name"] = match
             self.store.save_settings()
+            self._refresh_prompt_btn()
             saved.configure(text="Saved. The preview below already "
                                  "uses it.")
             refresh_preview()
@@ -866,6 +969,88 @@ class App:
                       font=(FONT, 10),
                       command=reset).pack(side="left", padx=8)
         saved.pack(anchor="w", padx=12, pady=(4, 0))
+
+        tk.Label(win, text="PROMPT PRESETS", bg=BG, fg=GREEN,
+                 font=(FONT, 11, "bold")).pack(anchor="w", padx=12,
+                                               pady=(14, 2))
+        tk.Label(win, text="Click a preset to use it — it loads "
+                           "above and applies from the next message, "
+                           "and the header's Prompt picker switches "
+                           "the same list. Save the editor's text "
+                           "under a name to keep it; saving an "
+                           "existing name updates that preset.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
+                 wraplength=640).pack(anchor="w", padx=12)
+        prow = tk.Frame(win, bg=BG)
+        prow.pack(fill="x", padx=12, pady=(6, 0))
+        plist = tk.Listbox(prow, height=4, bg=PANEL2, fg=GREEN, bd=0,
+                           highlightthickness=1,
+                           highlightbackground=BORDER,
+                           selectbackground="#17351f",
+                           selectforeground=GREEN, font=(FONT, 10),
+                           activestyle="none")
+        plist.pack(side="left", fill="both", expand=True)
+        pcol = tk.Frame(prow, bg=BG)
+        pcol.pack(side="left", padx=(8, 0), fill="y")
+        name_ent = tk.Entry(pcol, bg=PANEL2, fg=GREEN,
+                            insertbackground=ORANGE, bd=0,
+                            highlightthickness=1,
+                            highlightbackground=BORDER,
+                            font=(FONT, 10), width=16)
+        name_ent.pack(anchor="w")
+
+        def refresh_plist():
+            plist.delete(0, "end")
+            for p in self._presets():
+                plist.insert("end", p.get("name", "?"))
+
+        def on_pick(_e=None):
+            sel = plist.curselection()
+            if not sel:
+                return
+            name = plist.get(sel[0])
+            for p in self._presets():
+                if p.get("name") == name:
+                    editor.delete("1.0", "end")
+                    editor.insert("1.0", p.get("text", ""))
+                    name_ent.delete(0, "end")
+                    name_ent.insert(0, name)
+                    self._pick_prompt(name)
+                    saved.configure(text="Preset '%s' is now "
+                                         "active." % name)
+                    refresh_preview()
+                    break
+
+        plist.bind("<<ListboxSelect>>", on_pick)
+
+        def save_preset():
+            if self._save_preset(name_ent.get(),
+                                 editor.get("1.0", "end").strip()):
+                refresh_plist()
+                saved.configure(text="Preset saved and active.")
+                refresh_preview()
+            else:
+                saved.configure(text="Give the preset a name first.")
+
+        def delete_preset():
+            sel = plist.curselection()
+            name = (plist.get(sel[0]) if sel
+                    else name_ent.get().strip())
+            if name and self._delete_preset(name):
+                refresh_plist()
+                saved.configure(text="Preset '%s' deleted. The "
+                                     "working prompt text above is "
+                                     "unchanged." % name)
+                refresh_preview()
+
+        RoundedButton(pcol, text="Save as preset", kind="primary",
+                      font=(FONT, 9, "bold"),
+                      command=save_preset).pack(anchor="w",
+                                                pady=(6, 4))
+        RoundedButton(pcol, text="Delete preset", kind="quiet",
+                      font=(FONT, 9),
+                      command=delete_preset).pack(anchor="w")
+        refresh_plist()
 
         tk.Label(win, text="WHAT THE MODEL ACTUALLY RECEIVES — "
                            "this chat, right now", bg=BG, fg=GREEN,

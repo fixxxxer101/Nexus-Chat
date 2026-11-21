@@ -19,6 +19,12 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   *exact* context the model receives for the open chat: your
   prompt, the appended long-term memory, the pinned origin, the
   compressed-topics note, and the messages. Nothing hidden.
+- **Prompt presets.** Save named system prompts in the System
+  window, delete them, click to use one — and switch between
+  them right in the main window from the **Prompt** picker next
+  to the model picker. The header always shows which prompt is
+  live: a preset name, **Custom** for unsaved edits, or
+  **Default**.
 - **Chat logs.** Every conversation auto-saves and lists in the
   sidebar. Reopen any of them any time.
 - **Long-term memory, both modes.**
