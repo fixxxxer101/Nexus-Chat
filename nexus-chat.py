@@ -6,9 +6,17 @@ Black / green / orange. No accounts, no cloud: chats, memory and
 logs all live on the Pi under ~/.local/share/nexus-chat/.
 
 Features (Clint's spec, 2026-11-21):
-  - Qwen3 thinking mode with an on/off toggle; each reply's thinking
-    trace is a collapsible block (click to expand/collapse), saved
-    in the chat log so old reasoning can be re-read.
+  - Thinking traces: when the model thinks (Qwen3), each reply's
+    reasoning is a collapsible block (click to expand/collapse),
+    saved in the chat log so old reasoning can be re-read. Models
+    that never think (e.g. qwen2.5) simply reply - pick per chat
+    from the model picker. (There is no thinking on/off toggle:
+    Qwen3 in no-think mode still narrated its reasoning inside the
+    answer, so the toggle could not be honest. Removed 2026-11-21
+    at Clint's direction.)
+  - Glass box: the system prompt is visible and editable in the
+    app (System button), and the same window previews the EXACT
+    context the model receives for the open chat - nothing hidden.
   - Chat logs: every conversation auto-saved, listed in a sidebar.
   - Long-term memory, both modes: manual (view / edit / add) and
     automatic (the model proposes entries; nothing is kept until
@@ -46,7 +54,7 @@ MEMORY_PATH = os.path.join(DATA_DIR, "memory.json")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 LOG_PATH = os.path.join(os.path.expanduser("~"), ".local", "state",
                         "nexus-chat.log")
-DEFAULT_MODELS = ["qwen3:4b", "qwen3:1.7b"]
+DEFAULT_MODELS = ["qwen3:4b", "qwen3:1.7b", "qwen2.5:3b"]
 NUM_CTX = 4096
 # context budget (rough tokens, chars/4): compress when the assembled
 # context passes COMPRESS_AT; always keep the last KEEP_RAW messages
@@ -92,18 +100,10 @@ SYSTEM_PROMPT = (
     "accurate and concise unless asked for depth. Everything here is "
     "offline and private."
 )
-
-# Appended to the system prompt whenever the Thinking toggle is OFF.
-# The API flag stops the separate thinking channel, but Qwen3 in
-# no-think mode still narrates step-by-step reasoning inside the
-# answer itself - which to the user IS "it thought anyway". This
-# instruction closes that side: OFF must look off.
-NO_THINK_INSTRUCTION = (
-    "Thinking mode is OFF for your next reply. Do not reason out "
-    "loud: no step-by-step working, no deliberation, no 'let me "
-    "think' or 'let's break this down'. Work it out silently and "
-    "give only the final answer, directly."
-)
+# The system prompt is NOT a black box: it lives in the settings
+# (key "system_prompt", defaulting to the text above) and is
+# viewable + editable in the app via the System button, which also
+# previews the exact context sent to the model. Glass box.
 
 COMPRESS_PROMPT = """You maintain the compressed memory of a long conversation.
 
@@ -232,10 +232,9 @@ class Streamer:
     queue as ("thinking", text), ("content", text), ("done", None),
     ("error", message)."""
 
-    def __init__(self, model, messages, think, events):
+    def __init__(self, model, messages, events):
         self.model = model
         self.messages = messages
-        self.think = think
         self.events = events
         self.stopped = threading.Event()
         self._resp = None
@@ -252,7 +251,11 @@ class Streamer:
         payload = {"model": self.model, "messages": self.messages,
                    "stream": True, "options": {"num_ctx": NUM_CTX}}
         if supports_thinking(self.model):
-            payload["think"] = bool(self.think)
+            # Thinking models think, and the trace is shown in its
+            # collapsible block. There is no off switch (see the
+            # module docstring for why); models that never think
+            # are never sent the key at all.
+            payload["think"] = True
         req = urllib.request.Request(
             OLLAMA + "/api/chat",
             data=json.dumps(payload).encode("utf-8"),
@@ -373,13 +376,12 @@ class Store:
 
 # ---------------------------------------------------------------- context
 
-def build_context(store, chat, model, think=True):
+def build_context(store, chat, model):
     """Assemble the message list the model sees for the next reply:
     system (+ long-term memory) + pinned origin + compressed key
     topics + the raw tail. The full log on disk is never altered."""
-    system = SYSTEM_PROMPT
-    if not think:
-        system += "\n\n" + NO_THINK_INSTRUCTION
+    system = (store.settings.get("system_prompt") or "").strip() \
+        or SYSTEM_PROMPT
     entries = store.memory.get("entries") or []
     if entries:
         system += "\n\nLong-term memory about the user:\n" + \
@@ -681,8 +683,6 @@ class App:
         self._cur = None               # streaming block state
         self.model = tk.StringVar(value=self.store.settings.get(
             "model", "qwen3:4b"))
-        self.think = tk.BooleanVar(value=bool(self.store.settings.get(
-            "think", False)))
         self._at_bottom = True
         self._ctl = None               # Ollama controller panel state
 
@@ -713,11 +713,10 @@ class App:
                       font=(FONT, 10, "bold"),
                       command=self.open_memory).pack(side="right",
                                                      pady=10)
-        self.think_btn = RoundedButton(head, text="", kind="ghost",
-                                       font=(FONT, 10, "bold"),
-                                       command=self._toggle_think)
-        self.think_btn.pack(side="right", padx=8, pady=10)
-        self._paint_think_btn()
+        RoundedButton(head, text="System", kind="ghost",
+                      font=(FONT, 10, "bold"),
+                      command=self.open_system).pack(side="right",
+                                                     padx=8, pady=10)
         RoundedButton(head, text="Ollama", kind="ghost",
                       font=(FONT, 10, "bold"),
                       command=self.open_controller).pack(side="right",
@@ -814,17 +813,106 @@ class App:
         self.model.set(name)
         self.model_btn.configure(text=name)
 
-    def _paint_think_btn(self):
-        if self.think.get():
-            self.think_btn.configure(text="Thinking: ON", fg=ORANGE)
-        else:
-            self.think_btn.configure(text="Thinking: OFF", fg=GREEN)
+    # ---- system prompt (glass box) -------------------------------
+    def open_system(self):
+        """See and edit the system prompt, and preview the EXACT
+        context the model receives for the open chat. Nothing about
+        what the model is told stays hidden."""
+        tk = self.tk
+        win = tk.Toplevel(self.root)
+        win.title("System Prompt")
+        win.geometry("680x640")
+        win.configure(bg=BG)
+        tk.Label(win, text="SYSTEM PROMPT", bg=BG, fg=GREEN,
+                 font=(FONT, 12, "bold")).pack(anchor="w", padx=12,
+                                               pady=(12, 2))
+        tk.Label(win, text="This is the instruction the app puts at "
+                           "the top of every conversation. Edit it, "
+                           "Save, and it applies from the next message "
+                           "on. An empty box means the built-in "
+                           "default (shown by Reset).",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
+                 wraplength=640).pack(anchor="w", padx=12)
+        editor = tk.Text(win, height=7, bg=PANEL2, fg=GREEN,
+                         insertbackground=ORANGE, bd=0,
+                         highlightthickness=1,
+                         highlightbackground=BORDER, font=(FONT, 10),
+                         wrap="word")
+        editor.pack(fill="x", padx=12, pady=8)
+        editor.insert("1.0", self.store.settings.get(
+            "system_prompt") or SYSTEM_PROMPT)
 
-    def _toggle_think(self):
-        self.think.set(not self.think.get())
-        self.store.settings["think"] = bool(self.think.get())
-        self.store.save_settings()
-        self._paint_think_btn()
+        saved = tk.Label(win, text="", bg=BG, fg=ORANGE_DIM,
+                         font=(FONT, 9))
+        btnrow = tk.Frame(win, bg=BG)
+        btnrow.pack(fill="x", padx=12)
+
+        def save():
+            text = editor.get("1.0", "end").strip()
+            self.store.settings["system_prompt"] = text
+            self.store.save_settings()
+            saved.configure(text="Saved. The preview below already "
+                                 "uses it.")
+            refresh_preview()
+
+        def reset():
+            editor.delete("1.0", "end")
+            editor.insert("1.0", SYSTEM_PROMPT)
+
+        RoundedButton(btnrow, text="Save", kind="primary",
+                      font=(FONT, 10, "bold"),
+                      command=save).pack(side="left")
+        RoundedButton(btnrow, text="Reset to default", kind="quiet",
+                      font=(FONT, 10),
+                      command=reset).pack(side="left", padx=8)
+        saved.pack(anchor="w", padx=12, pady=(4, 0))
+
+        tk.Label(win, text="WHAT THE MODEL ACTUALLY RECEIVES — "
+                           "this chat, right now", bg=BG, fg=GREEN,
+                 font=(FONT, 11, "bold")).pack(anchor="w", padx=12,
+                                                pady=(14, 2))
+        tk.Label(win, text="Your prompt, plus the parts the app "
+                           "appends: long-term memory inside the "
+                           "system message, the pinned origin, the "
+                           "compressed-topics note when a long chat "
+                           "has one, then the messages themselves.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
+                 wraplength=640).pack(anchor="w", padx=12)
+        preview = tk.Text(win, bg=PANEL, fg=GREEN_DIM, bd=0,
+                          highlightthickness=1,
+                          highlightbackground=BORDER,
+                          font=(FONT, 9), wrap="word",
+                          state="disabled")
+        preview.pack(fill="both", expand=True, padx=12, pady=8)
+
+        def refresh_preview():
+            chat = self.current
+            if chat is None:
+                body = "(no chat open)"
+            else:
+                msgs = build_context(self.store, chat,
+                                     self.model.get())
+                lines = ["Chat: %s   ·   %d messages   ·   ~%d "
+                         "tokens" % (chat.get("title", "?"),
+                                     len(msgs),
+                                     sum(est_tokens(m["content"]) + 4
+                                         for m in msgs)), ""]
+                for m in msgs:
+                    lines.append("[%s]" % m["role"].upper())
+                    lines.append(m["content"])
+                    lines.append("")
+                body = "\n".join(lines)
+            preview.configure(state="normal")
+            preview.delete("1.0", "end")
+            preview.insert("1.0", body)
+            preview.configure(state="disabled")
+
+        RoundedButton(win, text="Refresh preview", kind="ghost",
+                      font=(FONT, 9),
+                      command=refresh_preview).pack(anchor="w",
+                                                    padx=12,
+                                                    pady=(0, 10))
+        refresh_preview()
 
     # ---- scrolling ---------------------------------------------------
     def _on_scroll(self, first, last):
@@ -985,11 +1073,9 @@ class App:
         self.store.settings["model"] = model
         self.store.save_settings()
         block = self._render_message("assistant", "", "")
-        self._cur = {"block": block, "content": "", "thinking": "",
-                     "think_on": bool(self.think.get())}
-        ctx = build_context(self.store, chat, model,
-                            think=self.think.get())
-        self.streamer = Streamer(model, ctx, self.think.get(), self.events)
+        self._cur = {"block": block, "content": "", "thinking": ""}
+        ctx = build_context(self.store, chat, model)
+        self.streamer = Streamer(model, ctx, self.events)
         self.busy = True
         self.send_btn.configure(text="Stop")
         self.status.configure(text="Generating…", fg=ORANGE)
@@ -1000,12 +1086,6 @@ class App:
             while True:
                 kind, text = self.events.get_nowait()
                 if kind in ("thinking", "content") and self._cur:
-                    if kind == "thinking" and \
-                            not self._cur.get("think_on", True):
-                        # Thinking is OFF for this reply: never show
-                        # or save reasoning, even if the server
-                        # sends some anyway. OFF means OFF.
-                        continue
                     self._cur[kind] += text
                     block = self._cur["block"]
                     if kind == "thinking":

@@ -6,10 +6,19 @@ machine — no accounts, no cloud, nothing leaves the Pi.
 
 ## Features
 
-- **Qwen3 with a thinking toggle.** Thinking on or off per the header
-  switch. Every reply's thinking trace is saved and shown as a
-  collapsible **▸ Thinking** block — click to read exactly how the
-  model reasoned, click again to fold it away.
+- **Thinking traces, when the model thinks.** Qwen3 replies carry
+  a saved thinking trace, shown as a collapsible **▸ Thinking**
+  block — click to read exactly how the model reasoned, click
+  again to fold it away. There is deliberately **no thinking
+  on/off toggle**: Qwen3 in no-think mode still narrates its
+  reasoning inside the answer, so a toggle would be a lie. For a
+  model that never thinks, pick **qwen2.5:3b** in the model
+  picker — it just answers.
+- **Glass box.** The **System** button shows the system prompt —
+  and lets you edit and save it — plus a live preview of the
+  *exact* context the model receives for the open chat: your
+  prompt, the appended long-term memory, the pinned origin, the
+  compressed-topics note, and the messages. Nothing hidden.
 - **Chat logs.** Every conversation auto-saves and lists in the
   sidebar. Reopen any of them any time.
 - **Long-term memory, both modes.**
@@ -26,7 +35,8 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   sees; the saved log always keeps every word. The Memory window
   shows exactly what the model currently carries for the open chat.
 - **Streaming replies**, model picker (Qwen3 4B default, 1.7B fast
-  mode), Stop button mid-generation.
+  mode, qwen2.5:3b the non-thinking option), Stop button
+  mid-generation.
 - **Modern rounded theme.** Canvas-drawn rounded buttons and
   chat-bubble messages — no sharp corners anywhere.
 - **Ollama controller built in.** The header's **Ollama** button
