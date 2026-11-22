@@ -5,6 +5,17 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.16.1 — 2026-11-21
+Fix: on Windows, turning the chat background setting off
+passed an empty string to Tk's -transparentcolor, which on
+some builds keys transparency on the window's background
+colour instead - so the app's outer seams (the root
+background around the cards) went transparent while the
+chat area stayed solid. The off state now uses a dummy key
+colour that is never drawn, so nothing punches through
+when transparency is off, and only the chat area punches
+when it is on.
+
 ## 1.16.0 — 2026-11-21
 Assistant messages render their markdown properly. Fenced
 code becomes an inset code box with the language labelled
