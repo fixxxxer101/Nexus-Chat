@@ -25,6 +25,15 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   to the model picker. The header always shows which prompt is
   live: a preset name, **Custom** for unsaved edits, or
   **Default**.
+- **Real markdown rendering.** Fenced code renders as an inset
+  code box with the language labelled and a **Copy** button;
+  tables align in monospace with right-aligned numbers;
+  headings, bold and inline code all look the way the model
+  meant them.
+- **Chat background: black or transparent.** The Menu's
+  Settings submenu toggles the area behind the bubbles. On
+  Windows, Transparent lets the desktop show through around
+  the bubbles.
 - **Chat logs.** Every conversation auto-saves and lists in the
   sidebar. Reopen any of them any time.
 - **Long-term memory, both modes.**

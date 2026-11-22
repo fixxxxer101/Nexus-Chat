@@ -73,7 +73,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.15.0"
+VERSION = "1.16.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -195,6 +195,8 @@ PANEL = "#0b100c"        # header / sidebar surface
 PANEL2 = "#131a13"       # control fill (ghost buttons, fields)
 PANEL2_HOVER = "#1b261b"
 PANEL2_PRESS = "#0d130d"
+CODE_BG = "#070a07"      # code box inside a bubble (inset)
+TRANSPARENT_KEY = "#ff00ff"  # punch-through colour (never drawn)
 BUBBLE_BOT = "#0e1a10"   # assistant message bubble
 BUBBLE_BOT_EDGE = "#1e3325"
 BUBBLE_USER = "#1d1307"  # user message bubble (dark amber)
@@ -794,6 +796,128 @@ def fmt_speed(bps):
     return "%.0f KB/s" % (bps / 1e3)
 
 
+# ------------------------------------------------------------ markdown
+# The transcript renders assistant messages from segments, so
+# the markdown models actually emit - fenced code, tables,
+# headings, bold, inline code - looks right instead of showing
+# raw markers. Tk labels cannot style inline spans, so
+# paragraphs keep their words and drop the markers; code and
+# tables get their own widgets (see App._render_rich).
+
+def clean_inline(text):
+    """Drop inline markdown markers, keep the words."""
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"(?<!\w)\*([^*]+)\*(?!\w)", r"\1", text)
+    return text
+
+
+def _split_row(line):
+    return [c.strip() for c in
+            line.strip().strip("|").split("|")]
+
+
+def _is_separator_row(line):
+    cells = _split_row(line)
+    return bool(cells) and all(
+        re.fullmatch(r":?-{2,}:?", c or "--") for c in cells)
+
+
+def parse_markdown(text):
+    """Split a message into segments:
+    ("para", text) ("heading", level, text)
+    ("code", lang, code) ("table", headers, rows)."""
+    segs = []
+    para = []
+
+    def flush():
+        joined = "\n".join(para).strip()
+        if joined:
+            segs.append(("para", joined))
+        para.clear()
+
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith("```"):
+            flush()
+            lang = s[3:].strip()
+            buf = []
+            i += 1
+            while i < len(lines) and \
+                    not lines[i].strip().startswith("```"):
+                buf.append(lines[i])
+                i += 1
+            i += 1
+            segs.append(("code", lang, "\n".join(buf)))
+            continue
+        if s.startswith("|") and i + 1 < len(lines) and \
+                _is_separator_row(lines[i + 1]):
+            flush()
+            headers = _split_row(lines[i])
+            rows = []
+            i += 2
+            while i < len(lines) and \
+                    lines[i].strip().startswith("|"):
+                rows.append(_split_row(lines[i]))
+                i += 1
+            segs.append(("table", headers, rows))
+            continue
+        m = re.match(r"^(#{1,4})\s+(.*)$", s)
+        if m:
+            flush()
+            segs.append(("heading", len(m.group(1)),
+                         m.group(2).strip()))
+            i += 1
+            continue
+        if not s:
+            flush()
+            i += 1
+            continue
+        para.append(lines[i].rstrip())
+        i += 1
+    flush()
+    return segs
+
+
+def render_table_lines(headers, rows, budget=88):
+    """Align a parsed table as monospace lines: returns
+    (header_line, separator_line, [body_lines]). Columns are
+    padded to their widest cell, capped so the whole table
+    fits the budget; numeric columns right-align."""
+    cols = len(headers)
+    rows = [r + [""] * (cols - len(r)) for r in rows]
+    widths = []
+    for c in range(cols):
+        w = len(headers[c])
+        for r in rows:
+            w = max(w, len(r[c]))
+        widths.append(min(w, 30))
+
+    def total():
+        return sum(widths) + 3 * (cols - 1)
+
+    while total() > budget and max(widths) > 8:
+        widths[widths.index(max(widths))] -= 1
+
+    def cell(t, w, right):
+        t = t if len(t) <= w else t[:w - 1] + "…"
+        return t.rjust(w) if right else t.ljust(w)
+
+    numeric = []
+    for c in range(cols):
+        cells = [r[c] for r in rows if r[c]]
+        numeric.append(bool(cells) and all(
+            re.fullmatch(r"-?[\d][\d.,:%$ ]*", x) for x in cells))
+    head = " │ ".join(cell(headers[c], widths[c], False)
+                      for c in range(cols))
+    sep = "─" * total()
+    body = [" │ ".join(cell(r[c], widths[c], numeric[c])
+                       for c in range(cols)) for r in rows]
+    return head, sep, body
+
+
 # ---------------------------------------------------------------- GUI
 
 import tkinter as tk
@@ -1095,6 +1219,7 @@ class App:
         self._build_layout()
         chats = self.store.sorted_chats()
         self.open_chat(chats[0] if chats else self.store.new_chat())
+        self._apply_chat_bg(rebuild=False)
         self.refresh_sidebar()
         self.root.after(60, self._drain)
         self.root.after(300, self._check_ollama)
@@ -1167,14 +1292,14 @@ class App:
                        padx=(10, 10), pady=10)
         main = tk.Frame(main_card, bg=PANEL)
         main.pack(fill="both", expand=True, padx=8, pady=8)
-        self.canvas = tk.Canvas(main, bg=PANEL, bd=0,
+        self.canvas = tk.Canvas(main, bg=self._chat_bg(), bd=0,
                                 highlightthickness=0)
         self.scrollbar = RoundedScrollbar(
             main, command=self.canvas.yview, bg=PANEL)
         self.canvas.configure(yscrollcommand=self._on_scroll)
         self.scrollbar.pack(side="right", fill="y", padx=(4, 0))
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.flow = tk.Frame(self.canvas, bg=PANEL)
+        self.flow = tk.Frame(self.canvas, bg=self._chat_bg())
         self._flow_win = self.canvas.create_window((0, 0),
                                                    window=self.flow,
                                                    anchor="nw")
@@ -1310,6 +1435,40 @@ class App:
         self.store.settings["think_levels"] = d
         self.store.save_settings()
 
+    # ---- chat background ------------------------------------------
+    # The area behind the bubbles: solid (PANEL) or transparent.
+    # Transparent paints that area with a punch-through key
+    # colour and, on Windows, marks that colour transparent on
+    # the window, so the desktop shows through around the
+    # bubbles. (Tk on X11 has no per-colour punch-through; the
+    # setting is honoured where the platform supports it.)
+
+    def _chat_bg(self):
+        if self.store.settings.get("chat_background") == \
+                "transparent":
+            return TRANSPARENT_KEY
+        return PANEL
+
+    def _apply_chat_bg(self, rebuild=True):
+        colour = self._chat_bg()
+        self.canvas.configure(bg=colour)
+        self.flow.configure(bg=colour)
+        if IS_WINDOWS:
+            try:
+                self.root.attributes(
+                    "-transparentcolor",
+                    TRANSPARENT_KEY if colour == TRANSPARENT_KEY
+                    else "")
+            except Exception:
+                pass
+        if rebuild and self.current:
+            self.open_chat(self.current)
+
+    def _set_chat_bg(self, mode):
+        self.store.settings["chat_background"] = mode
+        self.store.save_settings()
+        self._apply_chat_bg()
+
     # ---- the header Menu ------------------------------------------
     # One Menu button holds what used to be a row of header
     # buttons: the thinking level and the way into every window
@@ -1338,6 +1497,16 @@ class App:
             menu.add_command(label="Thinking: not supported "
                                    "by this model",
                              state="disabled")
+        smenu = tk.Menu(menu, **style)
+        cur_bg = self.store.settings.get("chat_background") \
+            or "black"
+        for mode, label in (("black", "Black"),
+                            ("transparent", "Transparent")):
+            smenu.add_command(
+                label=("✓ " if cur_bg == mode else "   ")
+                + "Chat background: " + label,
+                command=lambda md=mode: self._set_chat_bg(md))
+        menu.add_cascade(label="Settings", menu=smenu)
         menu.add_separator()
         menu.add_command(label="System prompt…",
                          command=self.open_system)
@@ -1714,7 +1883,7 @@ class App:
         frame = BubbleFrame(self.flow, fill=fill,
                             outline=(BUBBLE_USER_EDGE if user
                                      else BUBBLE_BOT_EDGE),
-                            bg=PANEL)
+                            bg=self._chat_bg())
         frame.pack(anchor="e" if user else "w", padx=12, pady=5)
         self.blocks.append(frame)
         tk.Label(frame, text="YOU" if user else "NEXUS", bg=fill,
@@ -1722,28 +1891,130 @@ class App:
                  font=(FONT, 8, "bold")).pack(anchor="w", padx=12,
                                               pady=(8, 0))
         block = {"frame": frame, "thinking_lbl": None,
-                 "thinking_head": None, "open": False}
+                 "thinking_head": None, "open": False,
+                 "code_boxes": [], "tables": []}
         self.block_objs.append(block)
+        box = tk.Frame(frame, bg=fill)
+        box.pack(fill="x", anchor="w")
+        block["content_box"] = box
         if thinking:
             self._add_thinking(block, thinking)
-        lbl = tk.Label(frame, text=content, bg=fill,
-                       fg=USER_TEXT if user else GREEN,
-                       font=(FONT, 11), justify="left", anchor="w",
-                       wraplength=600)
-        lbl.pack(fill="x", anchor="w", padx=12, pady=(2, 9))
-        self._wrap_labels.append(lbl)
-        block["content_lbl"] = lbl
+        if user or not content:
+            # User words stay verbatim; an empty assistant block
+            # is a streaming block whose raw label fills live.
+            lbl = tk.Label(box, text=content, bg=fill,
+                           fg=USER_TEXT if user else GREEN,
+                           font=(FONT, 11), justify="left",
+                           anchor="w", wraplength=600)
+            lbl.pack(fill="x", anchor="w", padx=12, pady=(2, 9))
+            self._wrap_labels.append(lbl)
+            block["content_lbl"] = lbl
+        else:
+            block["content_lbl"] = None
+            self._render_rich(block, content)
         return block
+
+    def _render_rich(self, block, content):
+        """Render an assistant message from its markdown
+        segments: paragraphs (markers dropped, words kept),
+        headings, code boxes with a Copy button, and tables
+        aligned in monospace."""
+        tk = self.tk
+        box = block["content_box"]
+        stale = [w for w in self._wrap_labels
+                 if str(w).startswith(str(box))]
+        for w in list(box.winfo_children()):
+            w.destroy()
+        if stale:
+            gone = set(map(str, stale))
+            self._wrap_labels = [w for w in self._wrap_labels
+                                 if str(w) not in gone]
+        block["content_lbl"] = None
+        block["code_boxes"] = []
+        block["tables"] = []
+        for seg in parse_markdown(content):
+            kind = seg[0]
+            if kind == "para":
+                lbl = tk.Label(box, text=clean_inline(seg[1]),
+                               bg=BUBBLE_BOT, fg=GREEN,
+                               font=(FONT, 11), justify="left",
+                               anchor="w", wraplength=600)
+                lbl.pack(fill="x", anchor="w", padx=12, pady=(2, 3))
+                self._wrap_labels.append(lbl)
+            elif kind == "heading":
+                size = {1: 14, 2: 13, 3: 12}.get(seg[1], 11)
+                tk.Label(box, text=clean_inline(seg[2]),
+                         bg=BUBBLE_BOT, fg=GREEN,
+                         font=(FONT, size, "bold"), justify="left",
+                         anchor="w").pack(fill="x", anchor="w",
+                                          padx=12, pady=(5, 1))
+            elif kind == "code":
+                self._add_code_box(block, seg[1], seg[2])
+            elif kind == "table":
+                self._add_table(block, seg[1], seg[2])
+
+    def _add_code_box(self, block, lang, code):
+        tk = self.tk
+        box = block["content_box"]
+        wrap = BubbleFrame(box, fill=CODE_BG, outline=BORDER,
+                           radius=RADIUS_PANEL, bg=BUBBLE_BOT)
+        wrap.pack(fill="x", anchor="w", padx=12, pady=(4, 6))
+        head = tk.Frame(wrap, bg=CODE_BG)
+        head.pack(fill="x", padx=10, pady=(6, 0))
+        tk.Label(head, text=lang or "code", bg=CODE_BG,
+                 fg=ORANGE_DIM, font=(MONO, 8, "bold")).pack(
+                     side="left")
+
+        def copy_code(btn=None, text=code):
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            if btn is not None:
+                btn.configure(text="✓")
+
+                def restore(b=btn):
+                    if b.winfo_exists():
+                        b.configure(text="Copy")
+                self.root.after(1200, restore)
+
+        btn = RoundedButton(head, text="Copy", kind="quiet",
+                            bg=CODE_BG, font=(FONT, 8), padx=8,
+                            pady=2)
+        btn._command = lambda: copy_code(btn)
+        btn.pack(side="right")
+        lbl = tk.Label(wrap, text=code, bg=CODE_BG, fg=GREEN,
+                       font=(MONO, 10), justify="left", anchor="w")
+        lbl.pack(fill="x", anchor="w", padx=10, pady=(2, 8))
+        block["code_boxes"].append(
+            {"frame": wrap, "label": lbl, "btn": btn, "text": code,
+             "lang": lang})
+
+    def _add_table(self, block, headers, rows):
+        tk = self.tk
+        box = block["content_box"]
+        width = self.canvas.winfo_width()
+        budget = 88 if width <= 1 else max(
+            40, min(88, int((width - 130) / 7.7)))
+        head, sep, body = render_table_lines(headers, rows, budget)
+        h = tk.Label(box, text=head + "\n" + sep, bg=BUBBLE_BOT,
+                     fg=GREEN, font=(MONO, 10, "bold"),
+                     justify="left", anchor="w")
+        h.pack(fill="x", anchor="w", padx=12, pady=(4, 0))
+        b = tk.Label(box, text="\n".join(body), bg=BUBBLE_BOT,
+                     fg=GREEN, font=(MONO, 10), justify="left",
+                     anchor="w")
+        b.pack(fill="x", anchor="w", padx=12, pady=(0, 5))
+        block["tables"].append({"head": h, "body": b,
+                                 "lines": [head, sep] + body})
 
     def _add_thinking(self, block, text):
         tk = self.tk
         head = tk.Label(block["frame"], text="▸ Thinking",
                         bg=BUBBLE_BOT, fg=ORANGE_DIM,
                         font=(FONT, 9, "italic"), cursor="hand2")
-        if block.get("content_lbl") is not None:
-            # streaming: the answer label already exists - the
+        if block.get("content_box") is not None:
+            # the content box already exists (always, now) - the
             # thinking header belongs ABOVE it, not below
-            head.pack(anchor="w", padx=12, before=block["content_lbl"])
+            head.pack(anchor="w", padx=12, before=block["content_box"])
         else:
             head.pack(anchor="w", padx=12)
         lbl = tk.Label(block["frame"], text=text, bg=BUBBLE_BOT,
@@ -1754,7 +2025,7 @@ class App:
             b["open"] = not b["open"]
             if b["open"]:
                 b["thinking_lbl"].pack(fill="x", anchor="w", padx=12,
-                                       before=b["content_lbl"])
+                                       before=b["content_box"])
                 b["thinking_head"].configure(text="▾ Thinking")
             else:
                 b["thinking_lbl"].pack_forget()
@@ -1819,8 +2090,9 @@ class App:
                             text=self._cur["thinking"])
                         self.status.configure(text="Thinking…", fg=ORANGE)
                     else:
-                        block["content_lbl"].configure(
-                            text=self._cur["content"])
+                        if block["content_lbl"] is not None:
+                            block["content_lbl"].configure(
+                                text=self._cur["content"])
                         self.status.configure(text="Generating…", fg=ORANGE)
                     if self._view_at_bottom():
                         self.canvas.yview_moveto(1.0)
@@ -1871,6 +2143,14 @@ class App:
                 cur["block"]["content_lbl"].configure(text=content)
             except Exception:
                 pass
+        if not error and content:
+            # The stream showed raw text; now render the
+            # markdown properly - code boxes with Copy buttons,
+            # aligned tables, headings.
+            self._render_rich(cur["block"], content)
+            if self._view_at_bottom():
+                self.root.update_idletasks()
+                self.canvas.yview_moveto(1.0)
         msg = {"role": "assistant", "content": content,
                "thinking": cur["thinking"]}
         chat["messages"].append(msg)

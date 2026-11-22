@@ -5,6 +5,27 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.16.0 — 2026-11-21
+Assistant messages render their markdown properly. Fenced
+code becomes an inset code box with the language labelled
+and a Copy button that puts the exact code on the
+clipboard; markdown tables render aligned in monospace
+with a header rule and right-aligned numeric columns;
+headings get their size and weight; bold and inline-code
+markers no longer litter the text (Tk labels can't style
+inline spans, so paragraphs keep the words and drop the
+markers). While a reply streams it shows raw, and the
+finished message re-renders rich. User messages stay
+verbatim.
+
+Also: a Settings submenu in the header Menu toggles the
+chat background - the area behind the bubbles - between
+Black and Transparent. Transparent paints that area with a
+punch-through key colour and marks it transparent on the
+window, so on Windows the desktop shows through around the
+bubbles. (Tk under X11 has no per-colour punch-through, so
+on the Pi the area simply stays dark.)
+
 ## 1.15.0 — 2026-11-21
 The Prompt picker returns to the header beside the model
 picker (it spent one release inside the Menu; Manage
