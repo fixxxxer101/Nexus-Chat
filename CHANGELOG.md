@@ -5,6 +5,20 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.20.2 — 2026-11-21
+Bubble outlines could freeze at an earlier, shorter
+height on Windows - a tall reply's last lines spilled
+below an unclosed border. The redraw now takes its size
+from the Configure event itself (winfo can lag during a
+relayout), the underlay canvas's own resize is a second
+draw trigger, and every card and bubble redraws once more
+at idle after a chat opens, a stream finishes rendering,
+or a thinking section toggles - so the final outline
+always matches the final size. Header buttons got the
+same treatment, and a button's click now tests against
+the drawn pill itself, so the hitbox is exactly the
+button you see.
+
 ## 1.20.1 — 2026-11-21
 Model Locations scanning, made visible: a Scan now button
 re-scans on demand (adding a folder and opening the

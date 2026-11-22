@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.20.1"
+VERSION = "1.20.2"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1317,13 +1317,19 @@ class RoundedButton(tk.Canvas):
         self._fg = None
         self._enabled = True
         self._state = "normal"
-        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<Configure>", self._draw)
         self.bind("<Enter>", lambda e: self._set_state("hover"))
         self.bind("<Leave>", lambda e: self._set_state("normal"))
         self.bind("<ButtonPress-1>",
                   lambda e: self._set_state("press"))
         self.bind("<ButtonRelease-1>", self._release)
         self._draw()
+        # One settle redraw at idle, when the size is final -
+        # the same stale-size guard as BubbleFrame.settle.
+        try:
+            self.after_idle(self._draw)
+        except Exception:
+            pass
 
     def set_enabled(self, enabled):
         self._enabled = bool(enabled)
@@ -1340,15 +1346,32 @@ class RoundedButton(tk.Canvas):
     def _release(self, e):
         if not self._enabled:
             return
+        # The hitbox is the DRAWN pill, not the whole canvas:
+        # if the two ever disagree, the click should follow
+        # what the user can see.
         inside = (0 <= e.x <= self.winfo_width() and
                   0 <= e.y <= self.winfo_height())
+        try:
+            items = self.find_all()
+            if items:
+                bb = self.bbox(items[0])
+                if bb:
+                    inside = (bb[0] <= e.x <= bb[2] and
+                              bb[1] <= e.y <= bb[3])
+        except Exception:
+            pass
         self._set_state("hover" if inside else "normal")
         if inside and self._command:
             self._command()
 
-    def _draw(self):
+    def _draw(self, e=None):
         self.delete("all")
-        w, h = self.winfo_width(), self.winfo_height()
+        w = getattr(e, "width", 0) or 0
+        h = getattr(e, "height", 0) or 0
+        if w <= 1:
+            w = self.winfo_width()
+        if h <= 1:
+            h = self.winfo_height()
         if w <= 1:
             w = int(self.cget("width"))
         if h <= 1:
@@ -1415,6 +1438,24 @@ class BubbleFrame(tk.Frame):
                              highlightthickness=0)
         self._cv.place(x=0, y=0, relwidth=1, relheight=1)
         self.bind("<Configure>", self._redraw)
+        # The underlay canvas is sized BY the frame (place,
+        # relwidth/relheight=1), so its own Configure carries
+        # the same final size - a second trigger for the draw.
+        self._cv.bind("<Configure>", self._redraw)
+        self.settle()
+
+    def settle(self):
+        """Redraw once geometry has settled. A Configure
+        handler can run mid-relayout and read a size that is
+        already stale (seen on Windows: a tall chat bubble's
+        outline frozen at an earlier, shorter height, its
+        last lines spilling below the border). The settle
+        pass runs at idle, when sizes are final, so the
+        drawn rect always ends up the frame's true size."""
+        try:
+            self.after_idle(self._redraw)
+        except Exception:
+            pass
 
     def set_backing(self, colour):
         """Change the colour behind the rounded shape - the
@@ -1426,8 +1467,16 @@ class BubbleFrame(tk.Frame):
         self._cv.configure(bg=colour)
         self._redraw()
 
-    def _redraw(self, _e=None):
-        w, h = self.winfo_width(), self.winfo_height()
+    def _redraw(self, e=None):
+        # Prefer the event's own size: it is the size being
+        # configured, while winfo can lag a step behind it
+        # during a relayout cascade.
+        w = getattr(e, "width", 0) or 0
+        h = getattr(e, "height", 0) or 0
+        if w <= 1:
+            w = self.winfo_width()
+        if h <= 1:
+            h = self.winfo_height()
         if w <= 1 or h <= 1:
             return
         self._cv.delete("all")
@@ -2264,6 +2313,18 @@ class App:
         except Exception:
             return self._at_bottom
 
+    def _settle_bubbles(self):
+        """Ask every card and chat bubble to redraw once the
+        geometry settles - the guard against an outline left
+        at a stale, shorter height after a relayout (a stream
+        finishing, a thinking section collapsing, a chat
+        opening). Cheap: one idle redraw per frame."""
+        frames = list(self._frame_widgets)
+        frames += [b["frame"] for b in self.block_objs]
+        for f in frames:
+            if isinstance(f, BubbleFrame):
+                f.settle()
+
     def _on_flow_configure(self, _e):
         stick = self._view_at_bottom()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -2336,6 +2397,7 @@ class App:
         self.root.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.yview_moveto(1.0)
+        self._settle_bubbles()
 
     # ---- rendering ---------------------------------------------------
     def _render_message(self, role, content, thinking=""):
@@ -2492,6 +2554,7 @@ class App:
             else:
                 b["thinking_lbl"].pack_forget()
                 b["thinking_head"].configure(text="▸ Thinking")
+            self._settle_bubbles()
 
         head.bind("<Button-1>", toggle)
         block["thinking_head"] = head
@@ -2613,6 +2676,7 @@ class App:
             if self._view_at_bottom():
                 self.root.update_idletasks()
                 self.canvas.yview_moveto(1.0)
+            self._settle_bubbles()
         msg = {"role": "assistant", "content": content,
                "thinking": cur["thinking"]}
         chat["messages"].append(msg)
