@@ -5,6 +5,21 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.20.3 — 2026-11-21
+A finished reply's bubble shrank in width the moment the
+stream ended: the rich renderer created its labels at a
+fixed 600px wrap while everything else uses the live
+width (canvas width - 130), and nothing re-applied the
+live width until the next window resize - invisible in a
+narrow window, glaring in a wide one. Labels are now
+born at the live wrap width, so a bubble keeps its width
+from first token to finished render - and its height no
+longer jumps at the finish either, which is the same
+relayout the short-outline report rides on. Stream
+finishes also log the bubble's frame size, requested
+size, canvas height and drawn outline bottom, so any
+remaining outline fault names its layer in the log.
+
 ## 1.20.2 — 2026-11-21
 Bubble outlines could freeze at an earlier, shorter
 height on Windows - a tall reply's last lines spilled

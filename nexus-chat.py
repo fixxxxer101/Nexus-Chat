@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.20.2"
+VERSION = "1.20.3"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1585,6 +1585,9 @@ class App:
         self.blocks = []               # rendered message frames
         self.block_objs = []           # matching per-message block dicts
         self._wrap_labels = []         # labels needing wraplength updates
+        self._wrap_now = 600           # live wrap width, kept
+                                       # current by the canvas
+                                       # Configure handler
         self._cur = None               # streaming block state
         self.model = tk.StringVar(value=self.store.settings.get(
             "model", "qwen2.5:3b"))
@@ -2334,6 +2337,7 @@ class App:
     def _on_canvas_configure(self, e):
         self.canvas.itemconfigure(self._flow_win, width=e.width)
         wrap = max(200, e.width - 130)
+        self._wrap_now = wrap
         for lbl in self._wrap_labels:
             lbl.configure(wraplength=wrap)
 
@@ -2429,7 +2433,7 @@ class App:
             lbl = tk.Label(box, text=content, bg=fill,
                            fg=USER_TEXT if user else GREEN,
                            font=(FONT, 11), justify="left",
-                           anchor="w", wraplength=600)
+                           anchor="w", wraplength=self._wrap_now)
             lbl.pack(fill="x", anchor="w", padx=12, pady=(2, 9))
             self._wrap_labels.append(lbl)
             block["content_lbl"] = lbl
@@ -2462,7 +2466,7 @@ class App:
                 lbl = tk.Label(box, text=clean_inline(seg[1]),
                                bg=BUBBLE_BOT, fg=GREEN,
                                font=(FONT, 11), justify="left",
-                               anchor="w", wraplength=600)
+                               anchor="w", wraplength=self._wrap_now)
                 lbl.pack(fill="x", anchor="w", padx=12, pady=(2, 3))
                 self._wrap_labels.append(lbl)
             elif kind == "heading":
@@ -2543,7 +2547,7 @@ class App:
             head.pack(anchor="w", padx=12)
         lbl = tk.Label(block["frame"], text=text, bg=BUBBLE_BOT,
                        fg=THINK_GREEN, font=(FONT, 10, "italic"),
-                       justify="left", anchor="w", wraplength=600)
+                       justify="left", anchor="w", wraplength=self._wrap_now)
 
         def toggle(_e=None, b=block):
             b["open"] = not b["open"]
@@ -2677,6 +2681,23 @@ class App:
                 self.root.update_idletasks()
                 self.canvas.yview_moveto(1.0)
             self._settle_bubbles()
+        # Geometry evidence for the bubble-outline hunt: if an
+        # outline is ever short again, these four numbers say
+        # which layer disagreed - the frame's allocated size,
+        # its requested size, or the drawn polygon.
+        try:
+            fr = cur["block"]["frame"]
+            cv = fr._cv
+            its = cv.find_all()
+            bb = cv.bbox(its[0]) if its else None
+            log("finish geometry: frame=%dx%d req=%dx%d "
+                "canvas_h=%d poly_bottom=%s wrap=%d"
+                % (fr.winfo_width(), fr.winfo_height(),
+                   fr.winfo_reqwidth(), fr.winfo_reqheight(),
+                   cv.winfo_height(),
+                   bb[3] if bb else -1, self._wrap_now))
+        except Exception:
+            pass
         msg = {"role": "assistant", "content": content,
                "thinking": cur["thinking"]}
         chat["messages"].append(msg)
