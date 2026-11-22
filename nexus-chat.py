@@ -52,10 +52,12 @@ Pure Python 3 + Tkinter + urllib. No extra packages.
 Backend URL override for testing: NEXUS_OLLAMA=http://host:port
 """
 
+import hashlib
 import json
 import os
 import queue
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -73,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.19.1"
+VERSION = "1.20.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -799,6 +801,319 @@ def fmt_speed(bps):
     if mb >= 1:
         return "%.1f MB/s" % mb
     return "%.0f KB/s" % (bps / 1e3)
+
+
+# ------------------------------------------------------- model locations
+# Models that already live somewhere else on disk - an LM
+# Studio folder, a ComfyUI folder, anywhere - can be used IN
+# PLACE, with no second copy eating disk. The trick, proven
+# against Ollama 0.40: Ollama's store is just files. A model
+# is a manifest plus content-addressed blobs, and a blob's
+# name is the sha256 of the file itself. Registration
+# hardlinks the GGUF into the store under its hash name (a
+# hardlink is a second name for the same bytes - zero extra
+# disk) and writes the same manifest `ollama create` writes.
+# The running server lists it on the next refresh - no
+# restart, no copy. Unregistering deletes only the manifest
+# and the link; the original file is never touched. Where a
+# hardlink is impossible (another drive, a FAT/exFAT card) a
+# symlink is tried; where that fails too, registration
+# refuses rather than silently copying gigabytes.
+
+LOCAL_MODELS_PATH = os.path.join(DATA_DIR, "local_models.json")
+_SPLIT_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})$")
+_GGUF_FILE_TYPES = {
+    0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0",
+    8: "Q5_0", 9: "Q5_1", 10: "Q2_K", 11: "Q3_K_S",
+    12: "Q3_K_M", 13: "Q3_K_L", 14: "Q4_K_S", 15: "Q4_K_M",
+    16: "Q5_K_S", 17: "Q5_K_M", 18: "Q6_K", 19: "IQ2_XXS",
+    20: "IQ2_XS", 24: "IQ4_NL", 30: "IQ4_XS", 32: "BF16"}
+
+
+def ollama_store_dir():
+    """Where Ollama keeps its models on this machine."""
+    env = (os.environ.get("NEXUS_OLLAMA_MODELS")
+           or os.environ.get("OLLAMA_MODELS"))
+    if env:
+        return env
+    return os.path.join(os.path.expanduser("~"), ".ollama",
+                        "models")
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 22)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+_GGUF_SCALARS = {0: "<B", 1: "<b", 2: "<H", 3: "<h",
+                 4: "<I", 5: "<i", 6: "<f", 7: "<B",
+                 10: "<Q", 11: "<q", 12: "<d"}
+
+
+def gguf_meta(path):
+    """The few header fields registration needs, read from a
+    GGUF file's metadata: architecture, file type, size
+    label. Best-effort - any problem returns what was found
+    (often {}), and the config simply omits the rest; Ollama
+    reads the full metadata itself when it loads the file."""
+    wanted = ("general.architecture", "general.file_type",
+              "general.size_label")
+    meta = {}
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return meta
+            version = struct.unpack("<I", f.read(4))[0]
+            wide = version != 1        # v2/v3 use u64 counts
+
+            def count():
+                return struct.unpack(
+                    "<Q" if wide else "<I",
+                    f.read(8 if wide else 4))[0]
+
+            def read_str():
+                n = count()
+                return f.read(n).decode("utf-8", "replace")
+
+            def read_value(vtype):
+                if vtype == 8:                       # string
+                    return read_str()
+                if vtype == 9:                       # array
+                    etype = struct.unpack("<I", f.read(4))[0]
+                    n = count()
+                    if etype == 8:
+                        return [read_str() for _ in range(n)]
+                    fmt = _GGUF_SCALARS.get(etype)
+                    if fmt is None:
+                        raise ValueError("bad array type")
+                    size = struct.calcsize(fmt)
+                    vals = [struct.unpack(
+                        fmt, f.read(size))[0] for _ in range(n)]
+                    return vals
+                fmt = _GGUF_SCALARS.get(vtype)
+                if fmt is None:
+                    raise ValueError("bad value type")
+                return struct.unpack(fmt, f.read(
+                    struct.calcsize(fmt)))[0]
+
+            count()                                  # tensors
+            kv_count = count()
+            for _ in range(kv_count):
+                key = read_str()
+                vtype = struct.unpack("<I", f.read(4))[0]
+                value = read_value(vtype)
+                if key in wanted:
+                    meta[key] = value
+                if len(meta) == len(wanted):
+                    break
+    except Exception:
+        pass
+    return meta
+
+
+def _gguf_config(meta):
+    """The config blob `ollama create` would write, built
+    from the GGUF's own metadata."""
+    cfg = {"model_format": "gguf"}
+    arch = meta.get("general.architecture")
+    if arch:
+        cfg["model_family"] = arch
+        cfg["model_families"] = [arch]
+    label = meta.get("general.size_label")
+    if label:
+        cfg["model_type"] = label
+    ftype = _GGUF_FILE_TYPES.get(meta.get("general.file_type"))
+    if ftype:
+        cfg["file_type"] = ftype
+    return cfg
+
+
+def sanitize_model_name(stem):
+    """A filename stem as an Ollama model name part."""
+    name = re.sub(r"[^a-z0-9._-]+", "-", stem.lower())
+    return name.strip("-.") or "model"
+
+
+def scan_model_dirs(dirs):
+    """Every GGUF under the given folders, split files
+    grouped into one entry. Each entry: path (first shard),
+    paths (all shards), dir, size (total bytes)."""
+    entries = []
+    seen = set()
+    groups = {}
+    for base in dirs:
+        if not base or not os.path.isdir(base):
+            continue
+        for root, _sub, files in os.walk(base):
+            for fn in sorted(files):
+                if not fn.lower().endswith(".gguf"):
+                    continue
+                path = os.path.join(root, fn)
+                real = os.path.realpath(path)
+                if real in seen:
+                    continue
+                seen.add(real)
+                stem = fn[:-5]
+                m = _SPLIT_RE.match(stem)
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    continue
+                if m:
+                    key = (root, m.group(1), m.group(3))
+                    grp = groups.setdefault(
+                        key, {"path": None, "paths": [],
+                              "dir": root, "size": 0})
+                    grp["paths"].append(path)
+                    grp["size"] += size
+                    if m.group(2) == "00001":
+                        grp["path"] = path
+                else:
+                    entries.append({"path": path,
+                                    "paths": [path],
+                                    "dir": root, "size": size})
+    for grp in groups.values():
+        if grp["path"] is not None:
+            grp["paths"].sort()
+            entries.append(grp)
+    entries.sort(key=lambda e: e["path"].lower())
+    return entries
+
+
+def register_local_model(store, paths, name):
+    """Register the GGUF file(s) at `paths` in Ollama's
+    store under local/<name>, in place: hardlink (or symlink)
+    plus a hand-written manifest. Returns (ok, error, info)
+    where info carries the first shard's digest and the
+    total size. Never copies file data."""
+    blobs = os.path.join(store, "blobs")
+    os.makedirs(blobs, exist_ok=True)
+    layers = []
+    total = 0
+    for path in paths:
+        try:
+            digest = _sha256_file(path)
+            size = os.path.getsize(path)
+        except OSError as e:
+            return False, "Cannot read %s: %s" % (path, e), None
+        total += size
+        blob = os.path.join(blobs, "sha256-" + digest)
+        if not os.path.exists(blob):
+            try:
+                os.link(path, blob)
+            except OSError:
+                try:
+                    os.symlink(os.path.abspath(path), blob)
+                except OSError as e:
+                    return False, (
+                        "Cannot share %s with the Ollama "
+                        "store: %s. A hardlink or symlink is "
+                        "impossible there (a different drive, "
+                        "or a FAT/exFAT filesystem), and the "
+                        "model was NOT copied - Nexus Chat "
+                        "never duplicates model files."
+                        % (path, e)), None
+        layers.append({
+            "mediaType": "application/vnd.ollama.image.model",
+            "digest": "sha256:" + digest, "size": size,
+            "from": os.path.basename(path)})
+    cfg_bytes = json.dumps(
+        _gguf_config(gguf_meta(paths[0]))).encode("utf-8")
+    cfg_digest = hashlib.sha256(cfg_bytes).hexdigest()
+    cfg_blob = os.path.join(blobs, "sha256-" + cfg_digest)
+    if not os.path.exists(cfg_blob):
+        with open(cfg_blob, "wb") as f:
+            f.write(cfg_bytes)
+    manifest = {
+        "schemaVersion": 2,
+        "mediaType":
+            "application/vnd.docker.distribution.manifest.v2+json",
+        "config": {
+            "mediaType":
+                "application/vnd.docker.container.image.v1+json",
+            "digest": "sha256:" + cfg_digest,
+            "size": len(cfg_bytes)},
+        "layers": layers, "runner": "llamacpp",
+        "format": "gguf"}
+    man_bytes = json.dumps(manifest).encode("utf-8")
+    man_digest = hashlib.sha256(man_bytes).hexdigest()
+    man_blob = os.path.join(blobs, "sha256-" + man_digest)
+    if not os.path.exists(man_blob):
+        with open(man_blob, "wb") as f:
+            f.write(man_bytes)
+    tag_dir = os.path.join(store, "manifests-v2", "ollama.com",
+                           "local", name)
+    os.makedirs(tag_dir, exist_ok=True)
+    with open(os.path.join(tag_dir, "latest"), "wb") as f:
+        f.write(man_bytes)
+    info = {"digest": layers[0]["digest"].split(":", 1)[1],
+            "size": total}
+    return True, "", info
+
+
+def _referenced_digests(store):
+    """Every blob digest any manifest in the store points
+    at, read from the tag files of both store layouts."""
+    refs = set()
+    for layout in ("manifests-v2", "manifests"):
+        base = os.path.join(store, layout)
+        if not os.path.isdir(base):
+            continue
+        for root, _sub, files in os.walk(base):
+            for fn in files:
+                try:
+                    with open(os.path.join(root, fn),
+                              "rb") as f:
+                        data = f.read()
+                except OSError:
+                    continue
+                refs.update(x.decode() for x in re.findall(
+                    rb"sha256:([0-9a-f]{64})", data))
+    return refs
+
+
+def unregister_local_model(store, name):
+    """Remove local/<name>'s registration: its tag, and any
+    of its blobs no other manifest still references. The
+    source files outside the store are never touched - a
+    blob here is only ever a link to them, or their hash
+    name, and deleting a link deletes nothing else."""
+    tag_dir = os.path.join(store, "manifests-v2", "ollama.com",
+                           "local", name)
+    tag = os.path.join(tag_dir, "latest")
+    digests = []
+    try:
+        with open(tag, "rb") as f:
+            data = f.read()
+        digests = [x.decode() for x in re.findall(
+            rb"sha256:([0-9a-f]{64})", data)]
+        digests.append(hashlib.sha256(data).hexdigest())
+    except OSError:
+        pass
+    try:
+        os.remove(tag)
+    except OSError:
+        pass
+    try:
+        os.rmdir(tag_dir)
+    except OSError:
+        pass
+    if digests:
+        refs = _referenced_digests(store)
+        blobs = os.path.join(store, "blobs")
+        for d in digests:
+            if d not in refs:
+                try:
+                    os.remove(os.path.join(blobs, "sha256-" + d))
+                except OSError:
+                    pass
+    return True
 
 
 # ------------------------------------------------------------ markdown
@@ -2388,7 +2703,8 @@ class App:
         win.configure(bg=BG)
         mdl = {"win": win, "queue": queue.Queue(), "rows": {},
                "busy": None, "resp": None, "cancelled": False,
-               "drain_id": None, "have": None, "hf_tags": []}
+               "drain_id": None, "have": None, "hf_tags": [],
+               "loc_rows": {}, "found": []}
         self._mdl = mdl
 
         head = BubbleFrame(win, fill=PANEL, outline=BORDER,
@@ -2405,11 +2721,13 @@ class App:
                            "the ones you no longer want. Only "
                            "qwen2.5:3b is required - setup "
                            "installs just that one, and it "
-                           "cannot be deleted. Download sizes "
-                           "shown; a model also needs roughly "
-                           "its size again in free RAM to run, "
-                           "so the big ones are PC-class, not "
-                           "Pi-class.",
+                           "cannot be deleted. Every model below "
+                           "shows where it lives, so a duplicate "
+                           "can be removed from the right place. "
+                           "Model locations (further down) run "
+                           "GGUF files from LM Studio, ComfyUI "
+                           "or any folder IN PLACE - no second "
+                           "copy is made.",
                  bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
                  wraplength=540).pack(anchor="w", padx=14,
                                       pady=(10, 4))
@@ -2514,6 +2832,28 @@ class App:
                  bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
                      anchor="w", padx=6)
 
+        tk.Label(flow, text="MODEL LOCATIONS", bg=BG,
+                 fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=6,
+                                              pady=(12, 4))
+        tk.Label(flow, text="Folders scanned for GGUF model "
+                            "files. “Use in place” makes a "
+                            "file usable here while it stays "
+                            "exactly where it is - Nexus "
+                            "never copies it.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=500).pack(anchor="w", padx=6)
+        mdl["loc_frame"] = tk.Frame(flow, bg=BG)
+        mdl["loc_frame"].pack(fill="x")
+        mdl["found_label"] = tk.Label(flow,
+                                      text="FOUND MODEL FILES",
+                                      bg=BG, fg=ORANGE_DIM,
+                                      font=(FONT, 9, "bold"))
+        mdl["found_label"].pack(anchor="w", padx=6, pady=(12, 4))
+        mdl["found_frame"] = tk.Frame(flow, bg=BG)
+        mdl["found_frame"].pack(fill="x")
+
         last_cat = None
         for tag, name, cat, size, blurb in OPTIONAL_MODELS:
             if cat != last_cat:
@@ -2561,6 +2901,7 @@ class App:
         mdl["note"].pack(anchor="w", padx=14, pady=(0, 10))
         win.protocol("WM_DELETE_WINDOW",
                      lambda: self._mdl_close(mdl))
+        self._loc_render(mdl)
         self._mdl_refresh(mdl)
         self._mdl_drain(mdl)
 
@@ -2606,8 +2947,10 @@ class App:
                      bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
                          anchor="w", padx=6)
             return
+        reg = self._local_registry()
         for mm in sorted(models, key=lambda x: x["name"]):
             tag = mm["name"]
+            info = reg.get(tag)
             rowf = BubbleFrame(frame, fill=PANEL, outline=BORDER,
                                radius=RADIUS_PANEL, bg=BG)
             rowf.pack(fill="x", padx=4, pady=3)
@@ -2617,6 +2960,14 @@ class App:
                          fg=ORANGE_DIM,
                          font=(FONT, 8, "bold")).pack(
                              side="right", padx=12)
+            elif info is not None:
+                btn = RoundedButton(
+                    rowf, text="Remove", kind="quiet",
+                    font=(FONT, 10, "bold"), bg=PANEL,
+                    command=lambda t=tag, r=row:
+                        self._loc_remove_click(mdl, t, r))
+                btn.pack(side="right", padx=10, pady=10)
+                row["btn"] = btn
             else:
                 btn = RoundedButton(
                     rowf, text="Delete", kind="quiet",
@@ -2635,8 +2986,16 @@ class App:
                                       pady=(8, 0), fill="x")
             tk.Label(rowf, text="%s on disk" % gb(mm.get(
                 "size", 0)), bg=PANEL, fg=GREEN_DIM,
-                font=(FONT, 8)).pack(anchor="w", padx=12,
-                                     pady=(0, 8))
+                font=(FONT, 8)).pack(anchor="w", padx=12)
+            if info is not None:
+                where = "In place - %s" % info.get("source", "?")
+            else:
+                where = "Ollama store - %s" % ollama_store_dir()
+            tk.Label(rowf, text=where, bg=PANEL, fg=GREEN_DIM,
+                     font=(MONO, 8), justify="left",
+                     wraplength=430, anchor="w").pack(
+                         anchor="w", padx=12, pady=(0, 8),
+                         fill="x")
             mdl["bind_wheel"](rowf)
 
     def _mdl_delete_click(self, mdl, tag, row):
@@ -2651,7 +3010,8 @@ class App:
         else:
             row["armed_until"] = time.time() + 5
             row["btn"].configure(text="Really delete?")
-            row["status"].configure(text="click again to confirm")
+            row["status"].configure(
+                text="deletes Ollama's copy - click again")
 
     def _mdl_delete(self, mdl, tag):
         try:
@@ -2670,6 +3030,236 @@ class App:
             mdl["queue"].put(("deleted", tag))
         except Exception as e:
             mdl["queue"].put(("delete_error", (tag, str(e))))
+
+    # ---- Model locations ------------------------------------
+    # Folders of GGUF files (LM Studio, ComfyUI, anywhere)
+    # used IN PLACE through register_local_model: no copies,
+    # ever. The registry remembers which installed names are
+    # in-place and where their files really live, so the
+    # manager can label every model with its location and
+    # route removals correctly: an in-place model's Remove
+    # only unregisters it (the file stays), a store model's
+    # Delete only deletes Ollama's copy.
+
+    def _local_registry(self):
+        return _load_json(LOCAL_MODELS_PATH, {})
+
+    def _save_local_registry(self, reg):
+        _save_json(LOCAL_MODELS_PATH, reg)
+
+    def _loc_render(self, mdl):
+        tk = self.tk
+        dirs = self.store.settings.get("model_dirs") or []
+        frame = mdl["loc_frame"]
+        for child in frame.winfo_children():
+            child.destroy()
+        for d in dirs:
+            rowf = BubbleFrame(frame, fill=PANEL, outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            btn = RoundedButton(
+                rowf, text="Remove", kind="quiet",
+                font=(FONT, 9, "bold"), bg=PANEL,
+                command=lambda p=d: self._loc_remove_folder(
+                    mdl, p))
+            btn.pack(side="right", padx=8, pady=8)
+            tk.Label(rowf, text=d, bg=PANEL, fg=GREEN,
+                     font=(MONO, 9), justify="left",
+                     wraplength=400, anchor="w").pack(
+                         anchor="w", padx=12, pady=8, fill="x")
+            mdl["bind_wheel"](rowf)
+        addf = tk.Frame(frame, bg=BG)
+        addf.pack(fill="x", padx=4, pady=(2, 0))
+        RoundedButton(
+            addf, text="Add folder...", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._loc_add_folder(mdl)).pack(
+                side="left")
+        reg = self._local_registry()
+        by_source = {}
+        for api_name, info in reg.items():
+            by_source[info.get("source", "")] = api_name
+        entries = scan_model_dirs(dirs)
+        mdl["found"] = entries
+        mdl["loc_rows"] = {}
+        fframe = mdl["found_frame"]
+        for child in fframe.winfo_children():
+            child.destroy()
+        if not dirs:
+            tk.Label(fframe, text="No folders added yet.",
+                     bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
+                         anchor="w", padx=6)
+            return
+        if not entries:
+            tk.Label(fframe, text="No GGUF files found in "
+                                  "those folders.",
+                     bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
+                         anchor="w", padx=6)
+            return
+        for entry in entries:
+            rowf = BubbleFrame(fframe, fill=PANEL,
+                               outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            row = {}
+            api_name = by_source.get(entry["path"])
+            if api_name:
+                btn = RoundedButton(
+                    rowf, text="Remove", kind="quiet",
+                    font=(FONT, 10, "bold"), bg=PANEL,
+                    command=lambda t=api_name, r=row:
+                        self._loc_remove_click(mdl, t, r))
+                btn.pack(side="right", padx=10, pady=10)
+                row["btn"] = btn
+            else:
+                btn = RoundedButton(
+                    rowf, text="Use in place", kind="ghost",
+                    font=(FONT, 10, "bold"), bg=PANEL,
+                    command=lambda e=entry, r=row:
+                        self._loc_use_click(mdl, e, r))
+                btn.pack(side="right", padx=10, pady=10)
+                row["btn"] = btn
+            status = tk.Label(rowf, text="", bg=PANEL,
+                              fg=ORANGE_DIM, font=(FONT, 8))
+            status.pack(side="right", padx=(0, 2))
+            row["status"] = status
+            fname = os.path.basename(entry["path"])
+            tk.Label(rowf, text=fname, bg=PANEL, fg=GREEN,
+                     font=(FONT, 10, "bold"), justify="left",
+                     wraplength=330, anchor="w").pack(
+                         anchor="w", padx=12, pady=(8, 0),
+                         fill="x")
+            detail = entry["dir"]
+            if len(entry["paths"]) > 1:
+                detail += "  (%d files)" % len(entry["paths"])
+            tk.Label(rowf, text=detail, bg=PANEL,
+                     fg=GREEN_DIM, font=(MONO, 8),
+                     justify="left", wraplength=430,
+                     anchor="w").pack(anchor="w", padx=12,
+                                      fill="x")
+            last = tk.Label(
+                rowf,
+                text="%s - %s" % (
+                    gb(entry["size"]),
+                    ("in place as " + api_name) if api_name
+                    else "not in Nexus yet"),
+                bg=PANEL, fg=GREEN_DIM, font=(FONT, 8))
+            last.pack(anchor="w", padx=12, pady=(0, 8))
+            row["meta"] = last
+            mdl["loc_rows"][entry["path"]] = row
+            mdl["bind_wheel"](rowf)
+
+    def _loc_add_folder(self, mdl):
+        from tkinter import filedialog
+        path = filedialog.askdirectory(
+            parent=mdl["win"],
+            title="Folder with GGUF model files")
+        if not path:
+            return
+        path = os.path.normpath(path)
+        dirs = self.store.settings.get("model_dirs") or []
+        if path not in dirs:
+            dirs.append(path)
+            self.store.settings["model_dirs"] = dirs
+            self.store.save_settings()
+        self._loc_render(mdl)
+
+    def _loc_remove_folder(self, mdl, path):
+        dirs = self.store.settings.get("model_dirs") or []
+        if path in dirs:
+            dirs.remove(path)
+            self.store.settings["model_dirs"] = dirs
+            self.store.save_settings()
+        self._loc_render(mdl)
+
+    def _loc_unique_name(self, mdl, entry):
+        stem = os.path.basename(entry["path"])[:-5]
+        m = _SPLIT_RE.match(stem)
+        if m:
+            stem = m.group(1)
+        base = sanitize_model_name(stem)
+        reg = self._local_registry()
+        have = mdl.get("have") or set()
+
+        def taken(candidate):
+            api = "local/%s:latest" % candidate
+            if api in reg:
+                return reg[api].get("source") != entry["path"]
+            return api in have
+
+        name = base
+        n = 2
+        while taken(name):
+            name = "%s-%d" % (base, n)
+            n += 1
+        return name
+
+    def _loc_use_click(self, mdl, entry, row):
+        row["btn"].set_enabled(False)
+        row["status"].configure(text="Checking file...")
+        name = self._loc_unique_name(mdl, entry)
+        threading.Thread(target=self._loc_register_worker,
+                         args=(mdl, entry, name),
+                         daemon=True).start()
+
+    def _loc_register_worker(self, mdl, entry, name):
+        ok, err, info = register_local_model(
+            ollama_store_dir(), entry["paths"], name)
+        if not ok:
+            mdl["queue"].put(("loc_error", (entry, err)))
+            return
+        api_name = "local/%s:latest" % name
+        reg = self._local_registry()
+        reg[api_name] = {"source": entry["path"],
+                         "size": info["size"],
+                         "digest": info["digest"]}
+        self._save_local_registry(reg)
+        names = None
+        try:
+            names = [mm["name"] for mm in
+                     api_get("/api/tags").get("models", [])]
+        except Exception:
+            pass
+        if names is not None:
+            self.events.put(("models", names))
+        mdl["queue"].put(("loc_registered",
+                          (entry, api_name, names is not None)))
+
+    def _loc_remove_click(self, mdl, tag, row):
+        if row.get("armed_until", 0) > time.time():
+            row["btn"].set_enabled(False)
+            row["btn"].configure(text="Removing...")
+            row["status"].configure(text="")
+            threading.Thread(target=self._loc_remove_worker,
+                             args=(mdl, tag), daemon=True).start()
+        else:
+            row["armed_until"] = time.time() + 5
+            row["btn"].configure(text="Really remove?")
+            row["status"].configure(
+                text="removes from Nexus only, file stays - "
+                     "click again")
+
+    def _loc_remove_worker(self, mdl, tag):
+        name = tag.split(":", 1)[0]
+        if name.startswith("local/"):
+            name = name[len("local/"):]
+        try:
+            unregister_local_model(ollama_store_dir(), name)
+        except Exception as e:
+            mdl["queue"].put(("loc_error", (None, str(e))))
+            return
+        reg = self._local_registry()
+        reg.pop(tag, None)
+        self._save_local_registry(reg)
+        names = None
+        try:
+            names = [mm["name"] for mm in
+                     api_get("/api/tags").get("models", [])]
+        except Exception:
+            pass
+        if names is not None:
+            self.events.put(("models", names))
+        mdl["queue"].put(("loc_removed", tag))
 
     # ---- Hugging Face search ----------------------------------
     # GGUF repos from Hugging Face's public API (no account, no
@@ -3066,6 +3656,27 @@ class App:
                                  "running if you close this "
                                  "window. A cancelled pull "
                                  "resumes where it stopped.")
+                elif kind == "loc_registered":
+                    entry, api_name, seen = payload
+                    self._loc_render(mdl)
+                    self._mdl_refresh(mdl)
+                    mdl["note"].configure(
+                        text="%s now runs in place as %s - "
+                             "from %s. Nothing was copied."
+                             % (os.path.basename(entry["path"]),
+                                api_name, entry["dir"]))
+                elif kind == "loc_removed":
+                    self._loc_render(mdl)
+                    self._mdl_refresh(mdl)
+                    mdl["note"].configure(
+                        text="%s removed from Nexus - the "
+                             "file itself was not touched."
+                             % payload)
+                elif kind == "loc_error":
+                    entry, err = payload
+                    self._loc_render(mdl)
+                    self._mdl_refresh(mdl)
+                    mdl["note"].configure(text=err)
                 elif kind == "done":
                     row = mdl["rows"].get(payload)
                     mdl["busy"] = None

@@ -62,6 +62,14 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   delete for anything except the required model. A built-in
   **Hugging Face search** finds any GGUF repo, with a quant
   picker per result (Q4_K_M by default).
+- **Model locations.** Add folders — LM Studio's model
+  folder, a ComfyUI folder, anywhere — and their GGUF files
+  can be used **in place**: Nexus links them into Ollama's
+  store under their own hash, so they run from where they
+  already sit and take **no extra disk**. Every model in
+  the manager shows where it lives, so duplicates can be
+  removed from the right place; removing an in-place model
+  never touches the original file.
 - **One Menu, thinking levels.** The header's **Menu** button
   holds the windows (System, Memory, Ollama, Models), Update,
   and a **thinking level** setting remembered per model —

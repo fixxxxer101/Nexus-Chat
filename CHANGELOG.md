@@ -5,6 +5,25 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.20.0 — 2026-11-21
+Model Locations: GGUF models that already live somewhere
+else - an LM Studio folder, a ComfyUI folder, any folder -
+now run IN PLACE, with no second copy. The Model Manager
+takes any number of folders, scans them (subfolders
+included, split GGUFs grouped), and "Use in place"
+registers a file with Ollama by hardlinking it into the
+store under its own hash and writing the manifest by hand
+- zero extra disk, no restart, the original never touched.
+Every model in the manager now shows WHERE it lives ("In
+place - <full path>" or "Ollama store - <folder>"), so a
+duplicate can be removed from the right place: an in-place
+model's Remove only unregisters it (its blobs are dropped
+only when no other model references them; the file
+stays), while a store model's Delete removes Ollama's
+copy. Where a file cannot be shared with the store
+(another drive, a FAT/exFAT card), registration refuses
+with the reason rather than silently copying gigabytes.
+
 ## 1.19.1 — 2026-11-21
 The from-scratch installer is renamed to
 Nexus_Chat_Installer_Windows.bat. Same script, new name.
