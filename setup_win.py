@@ -6,7 +6,7 @@ Does everything, skipping whatever is already done:
   1. Ollama: found, or the official installer is downloaded and
      launched for Clint to click through - then run setup again
   2. Ollama started if its API is not answering
-  3. the chat models pulled (qwen3:4b, qwen3:1.7b, qwen2.5:3b)
+  3. the required chat model pulled (read from the app file)
   4. the app installed to %LOCALAPPDATA%\\NexusChat with its icon,
      a Desktop shortcut, and the checkout path recorded so the
      app's Update button can find this checkout later

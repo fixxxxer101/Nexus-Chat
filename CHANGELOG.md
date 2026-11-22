@@ -5,6 +5,17 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.19.0 — 2026-11-21
+from-scratch.bat: one double-click installs Nexus Chat on
+a fresh Windows PC. It installs Python 3, Git for Windows
+and Ollama when they're missing (quiet installers from the
+official sources), clones this repo to
+%USERPROFILE%\Nexus-Chat, hands off to setup.bat (model
+pull, app install, desktop shortcut), and launches the
+app. Idempotent: re-running skips whatever is done, and
+every failure path says what to fix and that re-running is
+safe.
+
 ## 1.18.1 — 2026-11-21
 The window opens in front: at startup it raises itself,
 takes focus, and holds topmost for a fraction of a second

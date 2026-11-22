@@ -94,8 +94,15 @@ icon.) Then click the **Nexus Chat** icon on the desktop.
 
 ## Setup on Windows
 
-Needs Python 3 (with Tk — the standard python.org installer
-includes it). Clone this repo, then double-click **`setup.bat`**:
+**From scratch:** download **`from-scratch.bat`** from this
+repo and double-click it. It installs Python 3, Git and
+Ollama if they're missing, clones this repo to
+`%USERPROFILE%\Nexus-Chat`, then runs setup and launches the
+app. Re-running it is safe — finished steps are skipped.
+
+**By hand:** needs Python 3 (with Tk — the standard
+python.org installer includes it). Clone this repo, then
+double-click **`setup.bat`**:
 it installs Ollama if it's missing (the official installer, which
 you click through once), starts it, pulls the models, installs
 the app to `%LOCALAPPDATA%\NexusChat`, and puts a **Nexus Chat**
