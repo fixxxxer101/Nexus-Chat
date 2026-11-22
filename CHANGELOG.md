@@ -5,6 +5,24 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.10.0 — 2026-11-21
+The chat window is contained: the transcript now lives in
+its own rounded, beveled card beside the sidebar card, tops
+aligned, instead of floating loose on the window background.
+And the chat scrollbar is rounded — the stock Tk scrollbar
+is a square-ended rectangle, so it is replaced with a
+canvas-drawn one: pill trough, pill thumb (green, brighter
+while dragging), drag / trough-click paging / wheel all as
+before. The default system prompt now says the app is
+designed to run on a Raspberry Pi 5 and beyond. Building
+this also exposed and fixed two scroll bugs that were
+already there: a stale "at bottom" flag could yank the view
+back down after scrolling up (Tk delivers the scroll
+notification late; the stick-to-bottom check now reads live
+geometry), and switching from a long chat to a short one
+left the old tall scroll region behind (open_chat now
+settles the region itself).
+
 ## 1.9.2 — 2026-11-21
 Fix: the bevel's light edge now runs all the way around each
 surface — the two-tone version (light top, dark bottom) read

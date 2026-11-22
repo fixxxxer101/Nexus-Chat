@@ -64,7 +64,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.9.2"
+VERSION = "1.10.0"
 IS_WINDOWS = os.name == "nt"
 OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
 if IS_WINDOWS:
@@ -134,7 +134,7 @@ RADIUS_PANEL = 14     # text and list panels inside windows
 
 SYSTEM_PROMPT = (
     "You are the assistant inside Nexus Chat, a private local chat "
-    "app running entirely on the user's own Raspberry Pi. Be direct, "
+    "app designed to run on a Raspberry Pi 5 and beyond. Be direct, "
     "accurate and concise unless asked for depth. Everything here is "
     "offline and private."
 )
@@ -791,6 +791,88 @@ class BubbleFrame(tk.Frame):
                           self._radius, self._fill, edge)
 
 
+class RoundedScrollbar(tk.Canvas):
+    """A scrollbar drawn on a canvas, because the stock Tk
+    scrollbar is a square-ended rectangle and cannot be rounded.
+    Speaks the slice of the tk.Scrollbar API this app uses:
+    set(first, last), called by the scrolled widget, and a
+    command callback invoked as command("moveto", frac) while
+    the thumb is dragged and command("scroll", n, "pages") on
+    a trough click. Both trough and thumb are pills; the thumb
+    is GREEN_DIM at rest and full GREEN while dragging, and it
+    only appears when there is something to scroll."""
+
+    WIDTH = 12
+    MIN_THUMB = 28
+
+    def __init__(self, master, command=None, bg=None):
+        if bg is None:
+            try:
+                bg = master.cget("bg")
+            except Exception:
+                bg = BG
+        super().__init__(master, width=self.WIDTH, bg=bg, bd=0,
+                         highlightthickness=0, cursor="hand2")
+        self._command = command
+        self._first = 0.0
+        self._last = 1.0
+        self._drag = None        # (pointer y, view first at grab)
+        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<ButtonPress-1>", self._press)
+        self.bind("<B1-Motion>", self._motion)
+        self.bind("<ButtonRelease-1>", self._release)
+        self._draw()
+
+    def set(self, first, last):
+        self._first = float(first)
+        self._last = float(last)
+        self._draw()
+
+    def _thumb(self):
+        h = max(1, self.winfo_height())
+        span = max(0.0, self._last - self._first)
+        th = min(h, max(self.MIN_THUMB, span * h))
+        y = max(0.0, min(self._first * h, h - th))
+        return y, th
+
+    def _draw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w <= 1:
+            w = self.WIDTH
+        if h <= 1:
+            return
+        draw_rounded_rect(self, 1, 1, w - 1, h - 1, (w - 2) / 2.0,
+                          fill=PANEL2, outline="")
+        if self._last - self._first < 0.999:
+            y, th = self._thumb()
+            draw_rounded_rect(self, 1, y + 1, w - 1, y + th - 1,
+                              (w - 2) / 2.0,
+                              fill=GREEN if self._drag else GREEN_DIM,
+                              outline="")
+
+    def _press(self, e):
+        y, th = self._thumb()
+        if y <= e.y <= y + th:
+            self._drag = (e.y, self._first)
+        elif self._command:
+            self._command("scroll", 1 if e.y > y + th else -1,
+                          "pages")
+        self._draw()
+
+    def _motion(self, e):
+        if self._drag is None or not self._command:
+            return
+        h = max(1, self.winfo_height())
+        grab_y, grab_first = self._drag
+        frac = grab_first + (e.y - grab_y) / float(h)
+        self._command("moveto", max(0.0, min(1.0, frac)))
+
+    def _release(self, _e):
+        self._drag = None
+        self._draw()
+
+
 class App:
     def __init__(self, root):
         import tkinter as tk
@@ -900,18 +982,23 @@ class App:
                       command=self.open_update
                       ).pack(fill="x", padx=12, pady=(0, 12))
 
-        main = tk.Frame(body, bg=BG)
-        main.pack(side="left", fill="both", expand=True)
-        self.canvas = tk.Canvas(main, bg=BG, bd=0, highlightthickness=0)
-        self.scrollbar = tk.Scrollbar(main, orient="vertical",
-                                      command=self.canvas.yview,
-                                      bg=GREEN_DIM, troughcolor=PANEL2,
-                                      bd=0, width=12,
-                                      activebackground=GREEN)
+        # The chat lives in its own card, a sibling of the
+        # sidebar card: same fill, same padding, tops aligned,
+        # instead of floating loose on the window background.
+        main_card = BubbleFrame(body, fill=PANEL, outline=BORDER,
+                                radius=RADIUS_CARD, bg=BG)
+        main_card.pack(side="left", fill="both", expand=True,
+                       padx=(10, 10), pady=10)
+        main = tk.Frame(main_card, bg=PANEL)
+        main.pack(fill="both", expand=True, padx=8, pady=8)
+        self.canvas = tk.Canvas(main, bg=PANEL, bd=0,
+                                highlightthickness=0)
+        self.scrollbar = RoundedScrollbar(
+            main, command=self.canvas.yview, bg=PANEL)
         self.canvas.configure(yscrollcommand=self._on_scroll)
-        self.scrollbar.pack(side="right", fill="y")
+        self.scrollbar.pack(side="right", fill="y", padx=(4, 0))
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.flow = tk.Frame(self.canvas, bg=BG)
+        self.flow = tk.Frame(self.canvas, bg=PANEL)
         self._flow_win = self.canvas.create_window((0, 0),
                                                    window=self.flow,
                                                    anchor="nw")
@@ -1257,9 +1344,31 @@ class App:
         self.scrollbar.set(first, last)
         self._at_bottom = float(last) >= 0.999
 
+    def _view_at_bottom(self):
+        """True if the chat view is at the bottom RIGHT NOW,
+        judged from live geometry. The _at_bottom flag alone is
+        not proof: Tk delivers the scroll notification after
+        other events, so the flag can hold a stale True just
+        after the user scrolls up - trusting it yanked the view
+        straight back to the bottom. Geometry (canvasy + the
+        current scrollregion) is synchronous and cannot lie."""
+        if not self._at_bottom:
+            return False
+        try:
+            region = self.canvas.cget("scrollregion")
+            if not region:
+                return True
+            parts = [float(v) for v in region.split()]
+            view_bottom = (self.canvas.canvasy(0)
+                           + self.canvas.winfo_height())
+            return view_bottom >= parts[3] - 4
+        except Exception:
+            return self._at_bottom
+
     def _on_flow_configure(self, _e):
+        stick = self._view_at_bottom()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        if self._at_bottom:
+        if stick:
             self.canvas.yview_moveto(1.0)
 
     def _on_canvas_configure(self, e):
@@ -1320,6 +1429,13 @@ class App:
             self._render_message(m["role"], m.get("content", ""),
                                  m.get("thinking", ""))
         self._at_bottom = True
+        # Settle the geometry and the scroll region NOW: the
+        # flow's Configure can be swallowed in the destroy /
+        # rebuild churn, and switching from a long chat to a
+        # short one then leaves the old tall region behind -
+        # a phantom void to scroll into, with a lying thumb.
+        self.root.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.yview_moveto(1.0)
 
     # ---- rendering ---------------------------------------------------
@@ -1330,7 +1446,7 @@ class App:
         frame = BubbleFrame(self.flow, fill=fill,
                             outline=(BUBBLE_USER_EDGE if user
                                      else BUBBLE_BOT_EDGE),
-                            bg=BG)
+                            bg=PANEL)
         frame.pack(anchor="e" if user else "w", padx=12, pady=5)
         self.blocks.append(frame)
         tk.Label(frame, text="YOU" if user else "NEXUS", bg=fill,
@@ -1436,7 +1552,7 @@ class App:
                         block["content_lbl"].configure(
                             text=self._cur["content"])
                         self.status.configure(text="Generating…", fg=ORANGE)
-                    if self._at_bottom:
+                    if self._view_at_bottom():
                         self.canvas.yview_moveto(1.0)
                 elif kind == "error":
                     self._finish_stream(error=text)
