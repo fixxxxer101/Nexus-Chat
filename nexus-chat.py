@@ -79,7 +79,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.34.0"
+VERSION = "1.35.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -4107,7 +4107,16 @@ class App:
                              fg=GREEN_DIM, font=(FONT, 8),
                              anchor="w")
         iw["log"].pack(fill="x")
-        ctl = tk.Frame(inner, bg=PANEL)
+        # The composer: settings row, prompt, negative and
+        # the Generate button live in ONE block so the
+        # image VIEW can hide them - viewing a picture
+        # shows the picture and its info, not the tools
+        # that made it. The composer and the generating
+        # view (where Cancel lives) show the block.
+        comp = tk.Frame(inner, bg=PANEL)
+        comp.pack(fill="x")
+        iw["composer"] = comp
+        ctl = tk.Frame(comp, bg=PANEL)
         ctl.pack(fill="x", pady=(6, 0))
 
         def ctl_label(text):
@@ -4157,14 +4166,14 @@ class App:
         iw["seed"].pack(side="left")
         if ui.get("seed") not in (None, ""):
             iw["seed"].insert(0, str(ui["seed"]))
-        tk.Label(inner, text="PROMPT", bg=PANEL, fg=GREEN_DIM,
+        tk.Label(comp, text="PROMPT", bg=PANEL, fg=GREEN_DIM,
                  font=(FONT, 9)).pack(anchor="w", pady=(10, 2))
-        iw["prompt"] = tk.Text(inner, height=3, bg=PANEL2,
+        iw["prompt"] = tk.Text(comp, height=3, bg=PANEL2,
                                fg=GREEN, insertbackground=ORANGE,
                                bd=0, highlightthickness=0,
                                font=(FONT, 11), wrap="word")
         iw["prompt"].pack(fill="x")
-        nrow = tk.Frame(inner, bg=PANEL)
+        nrow = tk.Frame(comp, bg=PANEL)
         nrow.pack(fill="x", pady=(8, 0))
         tk.Label(nrow, text="Negative", bg=PANEL,
                  fg=GREEN_DIM, font=(FONT, 9)).pack(side="left",
@@ -4176,10 +4185,15 @@ class App:
         iw["negative"].pack(side="left", fill="x", expand=True)
         iw["negative"].insert(0, ui.get("negative", ""))
         iw["gen_btn"] = RoundedButton(
-            inner, text="Generate", kind="primary", bg=PANEL,
+            comp, text="Generate", kind="primary", bg=PANEL,
             font=(FONT, 12, "bold"), pady=10,
             command=self._img_generate_or_cancel)
         iw["gen_btn"].pack(fill="x", pady=(12, 2))
+        # Resizing the window re-fits a shown picture to
+        # the new space (debounced - Configure fires in
+        # bursts while a window is dragged).
+        self._img_refit_job = None
+        inner.bind("<Configure>", self._img_on_resize)
 
     def _img_sampler_label(self):
         for key, label in IMG_SAMPLERS:
@@ -4578,6 +4592,7 @@ class App:
         self._img_history_refresh(select=rec["file"])
         self._img_viewing = "record"
         self._img_current = rec
+        self._img_composer_show(False)
         if job.get("seed_random"):
             # Show the seed that actually made this image -
             # blank meant random, and the drawn seed is now
@@ -4615,6 +4630,39 @@ class App:
             if factor > 1:
                 img = img.zoom(factor)
         return img
+
+    def _img_composer_show(self, show):
+        """The composer block (settings, prompt, negative,
+        Generate) belongs to making images. Viewing one
+        hides it; composing and generating show it."""
+        comp = self._imgw.get("composer")
+        if comp is None:
+            return
+        try:
+            packed = bool(comp.pack_info())
+        except Exception:
+            packed = False
+        if show and not packed:
+            comp.pack(fill="x")
+        elif not show and packed:
+            comp.pack_forget()
+
+    def _img_on_resize(self, e=None):
+        if getattr(self, "_img_refit_job", None) is not None:
+            try:
+                self.root.after_cancel(self._img_refit_job)
+            except Exception:
+                pass
+        self._img_refit_job = self.root.after(
+            140, self._img_refit_now)
+
+    def _img_refit_now(self):
+        self._img_refit_job = None
+        rec = self._img_current
+        if rec and self._img_viewing == "record":
+            path = os.path.join(IMG_DIR, rec.get("file") or "")
+            if os.path.isfile(path):
+                self._img_show(path)
 
     def _img_show(self, path):
         iw = self._imgw
@@ -4711,7 +4759,8 @@ class App:
         self._fs = {"win": win, "rec": rec, "base": base,
                     "photo": None, "cont": cont, "lbl": lbl,
                     "zoom_lbl": zoom_lbl, "mag": (1, 1),
-                    "ox": 0, "oy": 0, "drag": None}
+                    "fit_mode": True, "ox": 0, "oy": 0,
+                    "drag": None, "cfg_job": None}
         lbl.bind("<Button-1>", self._fs_press)
         lbl.bind("<B1-Motion>", self._fs_drag)
         lbl.bind("<ButtonRelease-1>", self._fs_release)
@@ -4720,6 +4769,14 @@ class App:
         win.bind_all("<MouseWheel>", self._fs_wheel)
         win.bind_all("<Button-4>", self._fs_wheel)
         win.bind_all("<Button-5>", self._fs_wheel)
+        lbl.bind("<MouseWheel>", self._fs_wheel)
+        lbl.bind("<Button-4>", self._fs_wheel)
+        lbl.bind("<Button-5>", self._fs_wheel)
+        # The window reaching its real size (Windows maps
+        # a fullscreen window in stages) re-runs the fit,
+        # so the picture lands fitted instead of at
+        # whatever size the container had mid-map.
+        cont.bind("<Configure>", self._fs_on_configure)
         win.focus_set()
         win.update_idletasks()
         self._fs_fit()
@@ -4745,6 +4802,7 @@ class App:
     def _fs_fit(self):
         if not self._fs:
             return
+        self._fs["fit_mode"] = True
         self._fs["mag"] = self._fs_fit_mag()
         self._fs["ox"] = 0
         self._fs["oy"] = 0
@@ -4753,10 +4811,36 @@ class App:
     def _fs_actual(self):
         if not self._fs:
             return
+        self._fs["fit_mode"] = False
         self._fs["mag"] = (1, 1)
         self._fs["ox"] = 0
         self._fs["oy"] = 0
         self._fs_render()
+
+    def _fs_on_configure(self, e=None):
+        fs = self._fs
+        if not fs:
+            return
+        if fs.get("cfg_job") is not None:
+            try:
+                fs["win"].after_cancel(fs["cfg_job"])
+            except Exception:
+                pass
+        fs["cfg_job"] = fs["win"].after(60,
+                                        self._fs_refit)
+
+    def _fs_refit(self):
+        fs = self._fs
+        if not fs:
+            return
+        fs["cfg_job"] = None
+        if fs.get("fit_mode"):
+            mag = self._fs_fit_mag()
+            if mag != fs["mag"]:
+                fs["mag"] = mag
+                self._fs_render()
+                return
+        self._fs_place()
 
     def _fs_render(self):
         fs = self._fs
@@ -4819,6 +4903,7 @@ class App:
                   key=lambda i: abs(vals[i] - cur))
         idx = max(0, min(len(vals) - 1, idx + step))
         if self._FS_LADDER[idx] != fs["mag"]:
+            fs["fit_mode"] = False
             fs["mag"] = self._FS_LADDER[idx]
             self._fs_render()
 
@@ -5009,6 +5094,7 @@ class App:
         if not rec:
             return
         self._img_apply_recipe(rec)
+        self._img_composer_show(True)
         self._imgw["status"].configure(
             text="Settings loaded from that image - seed %s "
                  "and all. Generate makes its twin."
@@ -5028,6 +5114,7 @@ class App:
             self._img_viewing = "job"
             self._img_current = None
             self._img_recipe_hide()
+            self._img_composer_show(True)
             job = self._img_job or {}
             self._img_photo = None
             iw["view"].configure(
@@ -5043,6 +5130,7 @@ class App:
             return
         self._img_viewing = "record"
         self._img_current = rec
+        self._img_composer_show(False)
         self._img_apply_recipe(rec)
         self._img_show(os.path.join(IMG_DIR, rec["file"]))
         self._img_recipe_show(rec)
@@ -5055,6 +5143,7 @@ class App:
     def _img_new(self):
         iw = self._imgw
         self._img_viewing = "new"
+        self._img_composer_show(True)
         iw["prompt"].delete("1.0", "end")
         iw["seed"].delete(0, "end")
         iw["status"].configure(text="")

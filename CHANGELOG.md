@@ -5,6 +5,21 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.35.0 — 2026-11-22
+The image view is a view (Clint's call): the settings
+row, prompt box, negative and Generate button are one
+composer block, and it hides while a saved image is on
+screen - picture, metadata and Use settings only. It
+shows in the composer and in the generating view
+(where Cancel lives), and Use settings brings it back
+loaded and ready. Resize is live now, too: the
+fullscreen view re-runs its fit as the window reaches
+its real size and whenever it changes (a fullscreen
+window maps in stages, and the first fit could land on
+a half-mapped container), and the studio re-fits a
+shown picture when the window is resized instead of
+keeping the size from when it was opened.
+
 ## 1.34.0 — 2026-11-22
 The fullscreen view zooms. Fit and 1:1 (actual size)
 buttons sit in its bar next to a live zoom percentage,
