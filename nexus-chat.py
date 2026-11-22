@@ -57,6 +57,12 @@ import urllib.request
 import urllib.error
 
 APP_NAME = "Nexus Chat"
+# The version, shown in the header and the window title. Bump it
+# in the SAME commit as every change, no exceptions: a feature
+# bumps the middle number (1.1.0), a fix bumps the last (1.0.1),
+# a breaking change bumps the first. 1.0.0 is the first versioned
+# release - everything before it was unversioned development.
+VERSION = "1.0.0"
 IS_WINDOWS = os.name == "nt"
 OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
 if IS_WINDOWS:
@@ -775,7 +781,7 @@ class App:
         self._ctl = None               # Ollama controller panel state
         self._upd = None               # Update window state
 
-        root.title(APP_NAME)
+        root.title("%s v%s" % (APP_NAME, VERSION))
         root.geometry("1040x700")
         root.minsize(780, 540)
         root.configure(bg=BG)
@@ -803,7 +809,10 @@ class App:
         head.pack(side="top", fill="x", padx=10, pady=(10, 2))
         head.pack_propagate(False)
         tk.Label(head, text="NEXUS CHAT", bg=PANEL, fg=GREEN,
-                 font=(FONT, 14, "bold")).pack(side="left", padx=16)
+                 font=(FONT, 14, "bold")).pack(side="left",
+                                               padx=(16, 6))
+        tk.Label(head, text="v" + VERSION, bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(side="left")
         self.status = tk.Label(head, text="", bg=PANEL, fg=GREEN_DIM,
                                font=(FONT, 9))
         self.status.pack(side="right", padx=14)
@@ -1532,6 +1541,9 @@ class App:
         tk.Label(win, text="UPDATE NEXUS CHAT", bg=BG, fg=GREEN,
                  font=(FONT, 12, "bold")).pack(anchor="w", padx=12,
                                                pady=(12, 2))
+        tk.Label(win, text="Installed version: v%s" % VERSION,
+                 bg=BG, fg=ORANGE_DIM, font=(FONT, 9)).pack(
+                     anchor="w", padx=12, pady=(0, 4))
         repo = find_repo()
         if repo:
             info = ("Pulls the latest version from your git "

@@ -77,6 +77,10 @@ Stop kills it and frees all its RAM.
 
 ## Updating
 
+The app is versioned: the header shows its version next to the
+title, and **every shipped change bumps it** — a feature bumps
+the middle number (1.1.0), a fix bumps the last (1.0.1).
+
 The sidebar's **Update** button does it from inside the app: it
 runs setup in your git checkout (which pulls the latest code
 first), streams the output into a window, and offers a Relaunch
