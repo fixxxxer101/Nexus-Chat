@@ -203,7 +203,35 @@ def make_shortcut():
     return False
 
 
+def ensure_pillow():
+    """Pillow gives the image viewer smooth scaling.
+    Optional: without it the viewer uses Tk's integer
+    scaling, so a failure here never stops setup."""
+    try:
+        import PIL  # noqa: F401
+        say("Pillow already installed")
+        return
+    except ImportError:
+        pass
+    say("Installing Pillow (image viewer scaling)...")
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install",
+             "--quiet", "pillow"],
+            capture_output=True, text=True, timeout=600)
+        if r.returncode == 0:
+            say("Pillow installed")
+        else:
+            say("Pillow did not install - the image viewer "
+                "will use basic scaling. (pip said: %s)"
+                % (r.stderr or "").strip()[-200:])
+    except Exception as e:
+        say("Pillow did not install (%s) - the image "
+            "viewer will use basic scaling." % e)
+
+
 def install_app():
+    ensure_pillow()
     os.makedirs(APP_HOME, exist_ok=True)
     os.makedirs(DATA_DIR, exist_ok=True)
     src = os.path.join(HERE, "nexus-chat.py")

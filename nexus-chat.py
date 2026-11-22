@@ -48,7 +48,10 @@ Features (Clint's spec, 2026-11-21):
     Compression only changes what the model sees; the saved log
     always keeps every word.
 
-Pure Python 3 + Tkinter + urllib. No extra packages.
+Pure Python 3 + Tkinter + urllib. One optional extra:
+Pillow (installed by setup) lets the image viewer scale
+pictures smoothly to fit their pane; without it the
+viewer falls back to Tk's integer scaling.
 Backend URL override for testing: NEXUS_OLLAMA=http://host:port
 """
 
@@ -71,6 +74,13 @@ import urllib.request
 import urllib.error
 import zlib
 
+try:
+    from PIL import Image as _PIL_Image
+    from PIL import ImageTk as _PIL_ImageTk
+except Exception:
+    _PIL_Image = None
+    _PIL_ImageTk = None
+
 APP_NAME = "Nexus Gate"
 # The version, shown in the header and the window title. Bump it
 # in the SAME commit as every change, no exceptions: a feature
@@ -79,7 +89,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.35.0"
+VERSION = "1.36.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -4609,10 +4619,31 @@ class App:
         self._img_bar(1.0)
 
     def _fit_photo(self, path, max_w, max_h):
-        """A PhotoImage of the file fitted into the box:
-        subsampled down when too big, zoomed up (integer
-        factors only - that's what Tk offers) when small.
-        None when the file can't be read as an image."""
+        """A PhotoImage of the file fitted into the box.
+        With Pillow (setup installs it) the picture is
+        resampled to fit the box exactly - Tk alone only
+        scales by whole-number factors, which turns a
+        512px picture in a 380px pane into a choice
+        between overflowing at 512 and shrinking to 256.
+        Without Pillow, the integer path below is the
+        fallback. None when the file can't be read."""
+        if _PIL_Image is not None:
+            try:
+                im = _PIL_Image.open(path)
+                im.load()
+                w, h = im.size
+                scale = min(max_w / max(w, 1),
+                            max_h / max(h, 1))
+                nw = max(1, int(round(w * scale)))
+                nh = max(1, int(round(h * scale)))
+                if (nw, nh) != (w, h):
+                    im = im.resize((nw, nh),
+                                   _PIL_Image.LANCZOS)
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGBA")
+                return _PIL_ImageTk.PhotoImage(im)
+            except Exception:
+                pass
         try:
             img = self.tk.PhotoImage(file=path)
         except Exception:
@@ -4666,18 +4697,23 @@ class App:
 
     def _img_show(self, path):
         iw = self._imgw
-        # Fit the picture to the space the studio actually
-        # has: a fixed 520px box overflows shorter windows
-        # and the packer clips the info block, the prompt
-        # box and the Generate button off the bottom.
-        max_h = 520
+        # Fit the picture to its PANE: the view frame is
+        # the flexible area, already sized by the layout
+        # to whatever the window leaves it - so the box
+        # is the frame's own size. (A fixed box, or a
+        # reserve guessed from the window height, either
+        # overflows the pane or shrinks the picture to a
+        # postage stamp.) Transitional layouts settle via
+        # the Configure refit.
+        max_w, max_h = 900, 520
         try:
-            inner_h = iw["view"].master.master.winfo_height()
-            if inner_h > 100:
-                max_h = max(140, min(520, inner_h - 470))
+            vf = iw["view"].master
+            vw, vh = vf.winfo_width(), vf.winfo_height()
+            if vw > 60 and vh > 30:
+                max_w, max_h = vw - 8, vh - 8
         except Exception:
             pass
-        img = self._fit_photo(path, 900, max_h)
+        img = self._fit_photo(path, max_w, max_h)
         if img is None:
             iw["status"].configure(
                 text="Cannot display that image.")

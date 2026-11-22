@@ -5,6 +5,18 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.36.0 — 2026-11-22
+The viewer picture fits its pane (Clint's screenshot:
+a 512x512 moon shot rendered at ~128px in a big empty
+pane). Two causes, both fixed. The fit box was guessed
+from the window height minus a fat reserve, which
+landed at 126px; the box is now the pane's own size -
+the layout already computed exactly that. And Tk only
+scales by whole numbers, so even a correct box forced
+512 -> 256; setup now installs Pillow (guarded -
+failure just keeps the old behaviour) and the viewer
+resamples smoothly to fill the pane precisely.
+
 ## 1.35.0 — 2026-11-22
 The image view is a view (Clint's call): the settings
 row, prompt box, negative and Generate button are one

@@ -95,6 +95,17 @@ done
 # ---- 4. The app --------------------------------------------------------
 say "Step 4/5: Nexus Gate app"
 bash "$SRC/install.sh" || die "install.sh failed - scroll up for its error"
+# Pillow: smooth scaling for the image viewer. Optional -
+# without it the viewer uses Tk's integer scaling, so a
+# failure here never stops setup.
+if python3 -c "import PIL" >/dev/null 2>&1; then
+  skip "Pillow already installed"
+elif python3 -m pip install --user --break-system-packages \
+       --quiet pillow >/dev/null 2>&1; then
+  done_ "Pillow installed"
+else
+  say "Pillow did not install - the image viewer will use basic scaling"
+fi
 
 # ---- 5. Image engine + baseline model ----------------------------------
 say "Step 5/5: image engine + baseline model"
