@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.22.0"
+VERSION = "1.23.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -86,6 +86,12 @@ IS_WINDOWS = os.name == "nt"
 # exists on Windows, hence the getattr fallback.
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
+# Where the update check reads the latest VERSION from:
+# the head of this very file on GitHub's main branch.
+VERSION_URL = os.environ.get(
+    "NEXUS_VERSION_URL",
+    "https://raw.githubusercontent.com/fixxxxer101/"
+    "Nexus-Chat/main/nexus-chat.py")
 HF_API = os.environ.get("NEXUS_HF", "https://huggingface.co")
 if IS_WINDOWS:
     _app_home = os.path.join(
@@ -398,6 +404,31 @@ def style_window(win):
                       lambda w=win: apply_titlebar_theme(w))
         except Exception:
             pass
+
+
+def version_key(v):
+    """'1.22.0' -> (1, 22, 0), for version comparisons."""
+    out = []
+    for p in str(v).split("."):
+        out.append(int(p) if p.isdigit() else 0)
+    return tuple(out)
+
+
+def fetch_latest_version():
+    """The VERSION on GitHub's main branch, read from the
+    head of the file - the constant sits a few KB in, so
+    only the first chunk is downloaded. Any failure
+    (offline, moved, unparseable) returns None: no
+    answer, no alarm."""
+    try:
+        req = urllib.request.Request(
+            VERSION_URL, headers={"User-Agent": "Nexus-Chat"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read(65536).decode("utf-8", "replace")
+        m = re.search(r'^VERSION\s*=\s*"([^"]+)"', data, re.M)
+        return m.group(1) if m else None
+    except Exception:
+        return None
 
 
 def est_tokens(text):
@@ -1884,6 +1915,9 @@ class App:
         self.refresh_sidebar()
         self.root.after(60, self._drain)
         self.root.after(300, self._check_ollama)
+        self._ver_gen = 0
+        self._latest_version = None
+        self._schedule_version_check(5000)
         self.root.after(80, self._come_to_front)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         apply_titlebar_theme(self.root)
@@ -1924,8 +1958,13 @@ class App:
         tk.Label(head, text="NEXUS CHAT", bg=PANEL, fg=GREEN,
                  font=(FONT, 14, "bold")).pack(side="left",
                                                padx=(16, 6))
-        tk.Label(head, text="v" + VERSION, bg=PANEL, fg=GREEN_DIM,
-                 font=(FONT, 9)).pack(side="left")
+        self.version_lbl = tk.Label(head, text="v" + VERSION,
+                                    bg=PANEL, fg=GREEN_DIM,
+                                    font=(FONT, 9),
+                                    cursor="hand2")
+        self.version_lbl.pack(side="left")
+        self.version_lbl.bind("<Button-1>",
+                              lambda _e: self.open_update())
         self.status = tk.Label(head, text="", bg=PANEL, fg=GREEN_DIM,
                                font=(FONT, 9))
         self.status.pack(side="right", padx=14)
@@ -2290,6 +2329,22 @@ class App:
         smenu.add_separator()
         smenu.add_command(label="Content opacity…",
                           command=self.open_opacity)
+        smenu.add_separator()
+        umenu = tk.Menu(smenu, **style)
+        cur_iv = self._update_interval()
+        iv_labels = ((0, "Off"), (5, "5 minutes"),
+                     (10, "10 minutes"), (30, "30 minutes"),
+                     (60, "1 hour"), (360, "6 hours"))
+        for mins, label in iv_labels:
+            umenu.add_command(
+                label=("✓ " if cur_iv == mins else "   ")
+                + label,
+                command=lambda m_=mins:
+                    self._set_update_interval(m_))
+        smenu.add_cascade(
+            label="Update checks: " + dict(iv_labels).get(
+                cur_iv, "%d min" % cur_iv),
+            menu=umenu)
         menu.add_cascade(label="Settings", menu=smenu)
         menu.add_separator()
         menu.add_command(label="System prompt…",
@@ -2922,6 +2977,8 @@ class App:
                     self.status.configure(text=text, fg=GREEN_DIM)
                 elif kind == "models":
                     self._on_models(text)
+                elif kind == "version":
+                    self._on_version(text)
                 elif kind == "pull_done":
                     self._pull = None
                     if self._mdl is not None:
@@ -3031,6 +3088,59 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     # ---- ollama status -------------------------------------------------
+    # ---- version update checks -----------------------------------
+    def _update_interval(self):
+        try:
+            return int(self.store.settings.get(
+                "update_interval_min", 10))
+        except Exception:
+            return 10
+
+    def _schedule_version_check(self, delay_ms):
+        gen = self._ver_gen
+
+        def fire():
+            if gen == self._ver_gen:
+                self._check_version()
+        try:
+            self.root.after(delay_ms, fire)
+        except Exception:
+            pass
+
+    def _check_version(self):
+        mins = self._update_interval()
+        if mins <= 0:
+            return
+
+        def work():
+            self.events.put(("version", fetch_latest_version()))
+        threading.Thread(target=work, daemon=True).start()
+        self._schedule_version_check(mins * 60000)
+
+    def _set_update_interval(self, mins):
+        self.store.settings["update_interval_min"] = mins
+        self.store.save_settings()
+        # supersede any pending timer, then (if on) check
+        # promptly and continue at the new cadence
+        self._ver_gen += 1
+        if mins > 0:
+            self._schedule_version_check(1200)
+
+    def _on_version(self, latest):
+        if not latest:
+            return
+        self._latest_version = latest
+        try:
+            if version_key(latest) > version_key(VERSION):
+                self.version_lbl.configure(
+                    text="v%s (Update Available)" % VERSION,
+                    fg=ORANGE)
+            else:
+                self.version_lbl.configure(text="v" + VERSION,
+                                           fg=GREEN_DIM)
+        except Exception:
+            pass
+
     def _check_ollama(self):
         def work():
             try:

@@ -5,6 +5,20 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.23.0 — 2026-11-21
+The app checks for its own updates. A few seconds
+after starting, and then on an interval (every
+10 minutes by default), it reads the VERSION from
+the head of nexus-chat.py on GitHub's main branch -
+only the first chunk of the file is downloaded. When
+a newer version exists, the version text in the
+header turns orange and reads "vX.Y.Z (Update
+Available)"; clicking it opens the Update window.
+Checks that fail (offline, unreachable) are silent -
+no answer, no alarm. The interval is set under
+Menu > Settings > Update checks: Off, 5, 10 or
+30 minutes, 1 or 6 hours.
+
 ## 1.22.0 — 2026-11-21
 Bubbles run the full width of the chat now - user and
 assistant alike - and the text wraps at the full
