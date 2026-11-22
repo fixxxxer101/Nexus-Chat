@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.21.0"
+VERSION = "1.21.1"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1560,6 +1560,123 @@ class BubbleFrame(tk.Frame):
                           self._radius, self._fill, edge)
 
 
+class BubbleCanvas(tk.Canvas):
+    """A chat bubble that draws its own background. The
+    bubble IS the canvas: it carries its content in an
+    embedded frame, sizes itself from that content's
+    requested size, and paints the rounded rect in its
+    own Configure handler - the pattern the header
+    buttons use, which renders correctly everywhere.
+    The earlier design painted a bubble's background on
+    a separate canvas placed inside a frame; on Windows
+    that canvas's shown area could end up shorter than
+    the bubble, clipping every bubble's bottom half
+    away while the text and spacing stayed perfect."""
+
+    def __init__(self, master, fill, outline,
+                 radius=RADIUS_BUBBLE, bg=None):
+        super().__init__(master, bg=bg if bg is not None
+                         else PANEL, bd=0,
+                         highlightthickness=0)
+        self._fill = fill
+        self._outline = outline
+        self._radius = radius
+        self.content = tk.Frame(self, bg=fill)
+        self._win = self.create_window(0, 0,
+                                       window=self.content,
+                                       anchor="nw")
+        self.content.bind("<Configure>", self._sync_size)
+        self.bind("<Configure>", lambda _e: self._draw())
+        self._draw()
+
+    def _sync_soon(self):
+        # Mutations call this: the content's requested size
+        # is only recomputed during idle layout, so a sync
+        # done synchronously right after a mutation reads
+        # the stale size. Each call queues its own idle
+        # sync - deliberately not coalesced: a sync queued
+        # before a later mutation would run before that
+        # mutation's layout pass and read the in-between
+        # size, leaving the final size unsynced.
+        try:
+            self.after_idle(self._sync_size)
+        except Exception:
+            pass
+
+    def _sync_size(self, _e=None):
+        # A canvas window item does not resize itself when
+        # the embedded frame's REQUESTED size changes (a
+        # label's text growing wider at the same height
+        # fires no Configure anywhere), so the App syncs
+        # after every content mutation - renders, stream
+        # drains, thinking toggles - and the content's own
+        # Configure covers the rest.
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        w = self.content.winfo_reqwidth()
+        h = self.content.winfo_reqheight()
+        if w <= 1 or h <= 1:
+            return
+        if (w, h) != (int(self.cget("width")),
+                      int(self.cget("height"))):
+            self.itemconfigure(self._win, width=w, height=h)
+            self.configure(width=w, height=h)
+        self._arm_check(w, h)
+
+    def _arm_check(self, w, h):
+        # A sync can run before the mutation's own layout
+        # pass has recomputed the requested size (idle
+        # ordering is not guaranteed), reading the stale
+        # size and changing nothing. Verify once at idle:
+        # if the requested size moved since this pass,
+        # sync again. The chain stops by itself as soon
+        # as a check finds the size stable.
+        def check():
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            if (self.content.winfo_reqwidth(),
+                    self.content.winfo_reqheight()) != (w, h):
+                self._sync_size()
+        try:
+            self.after_idle(check)
+        except Exception:
+            pass
+
+    def _draw(self):
+        self.delete("bg")
+        try:
+            w = int(self.cget("width"))
+            h = int(self.cget("height"))
+        except Exception:
+            return
+        if w <= 1 or h <= 1:
+            return
+        if self._outline == BUBBLE_USER_EDGE:
+            edge = BEVEL_AMBER_LIGHT
+        else:
+            edge = BEVEL_LIGHT
+        draw_beveled_rect(self, 1, 1, w - 1, h - 1,
+                          self._radius, self._fill, edge)
+        for item in self.find_all():
+            if item != self._win:
+                self.addtag_withtag("bg", item)
+        # the background goes UNDER the content window
+        self.tag_lower("bg")
+
+    def settle(self):
+        try:
+            self.after_idle(self._sync_size)
+            self.after_idle(self._draw)
+        except Exception:
+            pass
+
+
 class RoundedScrollbar(tk.Canvas):
     """A scrollbar drawn on a canvas, because the stock Tk
     scrollbar is a square-ended rectangle and cannot be rounded.
@@ -2402,6 +2519,10 @@ class App:
         for f in frames:
             if isinstance(f, BubbleFrame):
                 f.settle()
+        for b in self.block_objs:
+            bub = b.get("bubble")
+            if bub is not None:
+                bub.settle()
 
     def _on_flow_configure(self, _e):
         stick = self._view_at_bottom()
@@ -2483,17 +2604,20 @@ class App:
         tk = self.tk
         user = role == "user"
         fill = BUBBLE_USER if user else BUBBLE_BOT
-        frame = BubbleFrame(self.flow, fill=fill,
-                            outline=(BUBBLE_USER_EDGE if user
-                                     else BUBBLE_BOT_EDGE),
-                            bg=PANEL)
-        frame.pack(anchor="e" if user else "w", padx=12, pady=5)
-        self.blocks.append(frame)
+        bubble = BubbleCanvas(self.flow, fill=fill,
+                              outline=(BUBBLE_USER_EDGE if user
+                                       else BUBBLE_BOT_EDGE),
+                              bg=PANEL)
+        bubble.pack(anchor="e" if user else "w", padx=12,
+                    pady=5)
+        self.blocks.append(bubble)
+        frame = bubble.content
         tk.Label(frame, text="YOU" if user else "NEXUS", bg=fill,
                  fg=ORANGE if user else GREEN,
                  font=(FONT, 8, "bold")).pack(anchor="w", padx=12,
                                               pady=(8, 0))
-        block = {"frame": frame, "thinking_lbl": None,
+        block = {"frame": frame, "bubble": bubble,
+                 "thinking_lbl": None,
                  "thinking_head": None, "open": False,
                  "code_boxes": [], "tables": []}
         self.block_objs.append(block)
@@ -2515,6 +2639,7 @@ class App:
         else:
             block["content_lbl"] = None
             self._render_rich(block, content)
+        bubble._sync_soon()
         return block
 
     def _render_rich(self, block, content):
@@ -2555,6 +2680,7 @@ class App:
                 self._add_code_box(block, seg[1], seg[2])
             elif kind == "table":
                 self._add_table(block, seg[1], seg[2])
+        block["bubble"]._sync_soon()
 
     def _add_code_box(self, block, lang, code):
         tk = self.tk
@@ -2633,6 +2759,7 @@ class App:
             else:
                 b["thinking_lbl"].pack_forget()
                 b["thinking_head"].configure(text="▸ Thinking")
+            b["bubble"]._sync_soon()
             self._settle_bubbles()
 
         head.bind("<Button-1>", toggle)
@@ -2640,6 +2767,7 @@ class App:
         block["thinking_lbl"] = lbl
         block["toggle"] = toggle
         self._wrap_labels.append(lbl)
+        block["bubble"]._sync_soon()
 
     # ---- sending / streaming -----------------------------------------
     def _enter(self, _e):
@@ -2698,6 +2826,7 @@ class App:
                             block["content_lbl"].configure(
                                 text=self._cur["content"])
                         self.status.configure(text="Generating…", fg=ORANGE)
+                    block["bubble"]._sync_soon()
                     if self._view_at_bottom():
                         self.canvas.yview_moveto(1.0)
                 elif kind == "error":
@@ -2761,15 +2890,14 @@ class App:
         # which layer disagreed - the frame's allocated size,
         # its requested size, or the drawn polygon.
         try:
-            fr = cur["block"]["frame"]
-            cv = fr._cv
-            its = cv.find_all()
-            bb = cv.bbox(its[0]) if its else None
-            log("finish geometry: frame=%dx%d req=%dx%d "
-                "canvas_h=%d poly_bottom=%s wrap=%d"
-                % (fr.winfo_width(), fr.winfo_height(),
-                   fr.winfo_reqwidth(), fr.winfo_reqheight(),
-                   cv.winfo_height(),
+            bub = cur["block"]["bubble"]
+            bg = bub.find_withtag("bg")
+            bb = bub.bbox(bg[0]) if bg else None
+            log("finish geometry: bubble=%dx%d "
+                "content_req=%dx%d poly_bottom=%s wrap=%d"
+                % (bub.winfo_width(), bub.winfo_height(),
+                   bub.content.winfo_reqwidth(),
+                   bub.content.winfo_reqheight(),
                    bb[3] if bb else -1, self._wrap_now))
         except Exception:
             pass

@@ -5,6 +5,18 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.21.1 — 2026-11-21
+Chat bubbles rebuilt on a sound mechanism. The bubble
+is now a single canvas that carries its content and
+paints its own background, sizing itself from the
+content's requested size - the same pattern as the
+header buttons, which render correctly everywhere.
+The old design (a background canvas placed inside a
+separate frame) kept losing the bubbles' bottom halves
+on Windows through three rounds of patches; the cards
+and manager rows, which were never reported broken,
+keep the old frame design.
+
 ## 1.21.0 — 2026-11-21
 The window title bar now follows the system theme: on
 Windows it reads the AppsUseLightTheme setting and sets
