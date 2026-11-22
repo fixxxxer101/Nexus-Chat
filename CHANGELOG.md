@@ -5,6 +5,16 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.22.0 — 2026-11-21
+Bubbles run the full width of the chat now - user and
+assistant alike - and the text wraps at the full
+available width instead of the old narrower measure,
+so nothing is squished into a content-sized box.
+HTML line breaks are respected for formatting: <br>,
+<br/> and <BR> in message text render as real line
+breaks (code blocks stay verbatim, and the stored
+text keeps the original tags).
+
 ## 1.21.2 — 2026-11-21
 Two fixes. The 1.21.1 bubbles lost their fills
 entirely: the content frame inside the bubble canvas

@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.21.2"
+VERSION = "1.22.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1230,6 +1230,16 @@ def _is_separator_row(line):
         re.fullmatch(r":?-{2,}:?", c or "--") for c in cells)
 
 
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+
+def breaks_to_newlines(text):
+    """Respect HTML line breaks in message text: <br>,
+    <br/> and <BR> in any case become real newlines for
+    display. Storage keeps the original text."""
+    return _BR_RE.sub("\n", text)
+
+
 def parse_markdown(text):
     """Split a message into segments:
     ("para", text) ("heading", level, text)
@@ -1246,6 +1256,10 @@ def parse_markdown(text):
     lines = text.split("\n")
     i = 0
     while i < len(lines):
+        # <br> breaks become newlines everywhere except
+        # inside code fences, where text is verbatim
+        if not lines[i].strip().startswith("```"):
+            lines[i] = breaks_to_newlines(lines[i])
         s = lines[i].strip()
         if s.startswith("```"):
             flush()
@@ -1629,8 +1643,14 @@ class BubbleCanvas(tk.Canvas):
                                        window=self.content,
                                        anchor="nw")
         self.content.bind("<Configure>", self._sync_size)
-        self.bind("<Configure>", lambda _e: self._draw())
+        self.bind("<Configure>", self._on_self_configure)
         self._draw()
+
+    def _on_self_configure(self, e):
+        self._draw()
+        if e.width != getattr(self, "_last_w", 0):
+            self._last_w = e.width
+            self._sync_soon()
 
     def _sync_soon(self):
         # Mutations call this: the content's requested size
@@ -1661,14 +1681,29 @@ class BubbleCanvas(tk.Canvas):
             return
         cw = self.content.winfo_reqwidth()
         ch = self.content.winfo_reqheight()
-        if cw <= 1 or ch <= 1:
+        if ch <= 1:
             return
-        w = cw + 2 * self.PAD
-        h = ch + 2 * self.PAD
-        if (w, h) != (int(self.cget("width")),
-                      int(self.cget("height"))):
+        aw = self.winfo_width()
+        if aw > 1:
+            # Allocated: bubbles run the full width of the
+            # chat, so pack owns the width - the content
+            # takes the allocated width inside the PAD
+            # ring, and only the height is set from here.
+            iw = aw - 2 * self.PAD
+            if iw > 1 and (iw, ch) != (getattr(self, "_item_w", 0),
+                                       getattr(self, "_item_h", 0)):
+                self._item_w, self._item_h = iw, ch
+                self.itemconfigure(self._win, width=iw,
+                                   height=ch)
+            h = ch + 2 * self.PAD
+            if int(self.cget("height")) != h:
+                self.configure(height=h)
+        elif cw > 1:
+            # Not allocated yet: size from the request so
+            # the bubble has sane geometry before it maps.
             self.itemconfigure(self._win, width=cw, height=ch)
-            self.configure(width=w, height=h)
+            self.configure(width=cw + 2 * self.PAD,
+                           height=ch + 2 * self.PAD)
         self._arm_check(cw, ch)
 
     def _arm_check(self, w, h):
@@ -1695,11 +1730,10 @@ class BubbleCanvas(tk.Canvas):
 
     def _draw(self):
         self.delete("bg")
-        try:
-            w = int(self.cget("width"))
-            h = int(self.cget("height"))
-        except Exception:
-            return
+        # the allocated size is the truth: with full-width
+        # packing the requested width lags the real one
+        w = self.winfo_width()
+        h = self.winfo_height()
         if w <= 1 or h <= 1:
             return
         if self._outline == BUBBLE_USER_EDGE:
@@ -2577,7 +2611,10 @@ class App:
 
     def _on_canvas_configure(self, e):
         self.canvas.itemconfigure(self._flow_win, width=e.width)
-        wrap = max(200, e.width - 130)
+        # full-width bubbles: canvas minus the bubble's
+        # side padding (24), its PAD ring (12) and the
+        # labels' own padding (24)
+        wrap = max(200, e.width - 60)
         self._wrap_now = wrap
         for lbl in self._wrap_labels:
             lbl.configure(wraplength=wrap)
@@ -2653,8 +2690,7 @@ class App:
                               outline=(BUBBLE_USER_EDGE if user
                                        else BUBBLE_BOT_EDGE),
                               bg=PANEL)
-        bubble.pack(anchor="e" if user else "w", padx=12,
-                    pady=5)
+        bubble.pack(fill="x", padx=12, pady=5)
         self.blocks.append(bubble)
         frame = bubble.content
         tk.Label(frame, text="YOU" if user else "NEXUS", bg=fill,
@@ -2674,7 +2710,8 @@ class App:
         if user or not content:
             # User words stay verbatim; an empty assistant block
             # is a streaming block whose raw label fills live.
-            lbl = tk.Label(box, text=content, bg=fill,
+            lbl = tk.Label(box, text=breaks_to_newlines(content),
+                           bg=fill,
                            fg=USER_TEXT if user else GREEN,
                            font=(FONT, 11), justify="left",
                            anchor="w", wraplength=self._wrap_now)
@@ -2791,7 +2828,8 @@ class App:
             head.pack(anchor="w", padx=12, before=block["content_box"])
         else:
             head.pack(anchor="w", padx=12)
-        lbl = tk.Label(block["frame"], text=text, bg=BUBBLE_BOT,
+        lbl = tk.Label(block["frame"],
+                       text=breaks_to_newlines(text), bg=BUBBLE_BOT,
                        fg=THINK_GREEN, font=(FONT, 10, "italic"),
                        justify="left", anchor="w", wraplength=self._wrap_now)
 
@@ -2864,12 +2902,14 @@ class App:
                         if block["thinking_lbl"] is None:
                             self._add_thinking(block, "")
                         block["thinking_lbl"].configure(
-                            text=self._cur["thinking"])
+                            text=breaks_to_newlines(
+                                self._cur["thinking"]))
                         self.status.configure(text="Thinking…", fg=ORANGE)
                     else:
                         if block["content_lbl"] is not None:
                             block["content_lbl"].configure(
-                                text=self._cur["content"])
+                                text=breaks_to_newlines(
+                                    self._cur["content"]))
                         self.status.configure(text="Generating…", fg=ORANGE)
                     block["bubble"]._sync_soon()
                     if self._view_at_bottom():
