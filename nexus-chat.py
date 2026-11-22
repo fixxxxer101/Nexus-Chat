@@ -25,8 +25,11 @@ Features (Clint's spec, 2026-11-21):
     the EXACT context the model receives for the open chat -
     nothing hidden. System prompts can be saved as named
     presets (save / delete / pick in the System window) and
-    switched from the header's Menu, beside the model picker.
-  - An Update button (sidebar) pulls the latest version from the
+    switched right in the header from the Prompt picker,
+    beside the model picker. Three built-in presets (Deep
+    Thinker, Creative Partner, Code Mentor) and a Blank
+    option - no system prompt at all - ship with the app.
+  - An Update entry (header Menu) pulls the latest version from the
     git checkout and reinstalls, streaming setup's output into a
     window - no terminal needed. One codebase, both platforms:
     the single-instance lock, data paths, fonts and the Ollama
@@ -70,7 +73,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.14.0"
+VERSION = "1.15.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -231,6 +234,36 @@ SYSTEM_PROMPT = (
     "accurate and concise unless asked for depth. Everything here is "
     "offline and private."
 )
+# Built-in prompt presets, always in the Prompt picker next to
+# the user's own: three different defaults to test against each
+# other. Picking one copies its text into the working prompt,
+# exactly like a user preset; saving a user preset under the
+# same name shadows the built-in (deleting it un-shadows).
+BUILTIN_PRESETS = [
+    {"name": "Deep Thinker",
+     "text": "You are the assistant inside Nexus Chat, a private "
+             "local chat app. Think carefully before answering: "
+             "work through the problem step by step, weigh the "
+             "alternatives, check your own reasoning for errors, "
+             "and only then give a clear final answer. Prefer "
+             "depth and correctness over speed. Everything here "
+             "is offline and private."},
+    {"name": "Creative Partner",
+     "text": "You are the assistant inside Nexus Chat, a private "
+             "local chat app. Be a creative partner: brainstorm "
+             "freely, offer several ideas instead of one, build "
+             "on the user's ideas and keep the tone playful and "
+             "encouraging. Wild ideas are welcome - polish comes "
+             "later. Everything here is offline and private."},
+    {"name": "Code Mentor",
+     "text": "You are the assistant inside Nexus Chat, a private "
+             "local chat app. Act as a senior programming mentor: "
+             "give working code first, then explain how it works "
+             "and why. Point out pitfalls, edge cases and better "
+             "alternatives. Keep explanations practical and in "
+             "plain language. Everything here is offline and "
+             "private."},
+]
 # The system prompt is NOT a black box: it lives in the settings
 # (key "system_prompt", defaulting to the text above) and is
 # viewable + editable in the app via the System button, which also
@@ -544,17 +577,29 @@ class Store:
 
 # ---------------------------------------------------------------- context
 
+def effective_system_text(store):
+    """The system prompt text in force: the saved prompt, the
+    built-in default when none is saved - or "" when the Blank
+    preset is picked, which means no system prompt at all."""
+    name = store.settings.get("prompt_name") or ""
+    text = (store.settings.get("system_prompt") or "").strip()
+    if name == "Blank" and not text:
+        return ""
+    return text or SYSTEM_PROMPT
+
+
 def build_context(store, chat, model):
     """Assemble the message list the model sees for the next reply:
     system (+ long-term memory) + pinned origin + compressed key
     topics + the raw tail. The full log on disk is never altered."""
-    system = (store.settings.get("system_prompt") or "").strip() \
-        or SYSTEM_PROMPT
+    system = effective_system_text(store)
     entries = store.memory.get("entries") or []
-    if entries:
-        system += "\n\nLong-term memory about the user:\n" + \
-            "\n".join("- " + e for e in entries)
-    msgs = [{"role": "system", "content": system}]
+    msgs = []
+    if system:
+        if entries:
+            system += "\n\nLong-term memory about the user:\n" + \
+                "\n".join("- " + e for e in entries)
+        msgs.append({"role": "system", "content": system})
     if chat.get("origin"):
         o = chat["origin"]
         msgs.append({"role": "user", "content": o["user"]})
@@ -1083,6 +1128,13 @@ class App:
         self.model_btn.pack(side="right", pady=11)
         tk.Label(head, text="Model", bg=PANEL, fg=GREEN_DIM,
                  font=(FONT, 9)).pack(side="right", padx=(0, 6))
+        self.prompt_btn = RoundedButton(head, text="", kind="ghost",
+                                        font=(FONT, 10), bg=PANEL,
+                                        command=self._prompt_popup)
+        self.prompt_btn.pack(side="right", pady=11)
+        tk.Label(head, text="Prompt", bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(side="right", padx=(0, 6))
+        self._refresh_prompt_btn()
 
         body = tk.Frame(self.root, bg=BG)
         body.pack(side="top", fill="both", expand=True)
@@ -1104,11 +1156,7 @@ class App:
         RoundedButton(side, text="Delete chat", kind="quiet",
                       bg=PANEL, font=(FONT, 9),
                       command=self.delete_current
-                      ).pack(fill="x", padx=12, pady=(12, 6))
-        RoundedButton(side, text="Update", kind="ghost",
-                      bg=PANEL, font=(FONT, 9),
-                      command=self.open_update
-                      ).pack(fill="x", padx=12, pady=(0, 12))
+                      ).pack(fill="x", padx=12, pady=(12, 12))
 
         # The chat lives in its own card, a sibling of the
         # sidebar card: same fill, same padding, tops aligned,
@@ -1192,14 +1240,53 @@ class App:
 
     def _prompt_label(self):
         text = (self.store.settings.get("system_prompt") or "").strip()
-        if not text:
-            return "Default"
         name = self.store.settings.get("prompt_name") or ""
-        for p in self._presets():
+        if not text:
+            return "Blank" if name == "Blank" else "Default"
+        for p in self._presets() + BUILTIN_PRESETS:
             if p.get("name") == name and \
                     (p.get("text") or "").strip() == text:
                 return name
         return "Custom"
+
+    def _refresh_prompt_btn(self):
+        self.prompt_btn.configure(text=self._prompt_label())
+
+    def _prompt_popup(self):
+        tk = self.tk
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=GREEN,
+                       activebackground=GREEN_FAINT,
+                       activeforeground=GREEN, bd=0,
+                       font=(FONT, 10))
+        cur = self._prompt_label()
+
+        def entry(label, name, shown):
+            menu.add_command(
+                label=("✓ " if cur == shown else "   ") + label,
+                command=lambda: self._pick_prompt(name))
+
+        entry("Default (built-in)", None, "Default")
+        entry("Blank (no system prompt)", "Blank", "Blank")
+        menu.add_separator()
+        for p in BUILTIN_PRESETS:
+            entry(p["name"] + " (built-in)", p["name"], p["name"])
+        mine = self._presets()
+        if mine:
+            menu.add_separator()
+            for p in mine:
+                entry(p.get("name", "?"), p.get("name"),
+                      p.get("name", "?"))
+        menu.add_separator()
+        menu.add_command(label="Manage prompts…",
+                         command=self.open_system)
+        x = self.prompt_btn.winfo_rootx()
+        y = (self.prompt_btn.winfo_rooty() +
+             self.prompt_btn.winfo_height())
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+        return menu
 
     # ---- thinking level ------------------------------------------
     # Remembered per model in settings["think_levels"]; the
@@ -1225,8 +1312,9 @@ class App:
 
     # ---- the header Menu ------------------------------------------
     # One Menu button holds what used to be a row of header
-    # buttons: the prompt presets, the thinking level, and the
-    # way into every window (System, Memory, Ollama, Models).
+    # buttons: the thinking level and the way into every window
+    # (System, Memory, Ollama, Models) plus Update. The prompt
+    # presets live in the header's own Prompt picker instead.
 
     def _menu_popup(self):
         tk = self.tk
@@ -1234,22 +1322,6 @@ class App:
                      activebackground=GREEN_FAINT,
                      activeforeground=GREEN, bd=0, font=(FONT, 10))
         menu = tk.Menu(self.root, **style)
-        pmenu = tk.Menu(menu, **style)
-        cur_prompt = self._prompt_label()
-        pmenu.add_command(
-            label=("✓ " if cur_prompt == "Default" else "   ")
-            + "Default (built-in)",
-            command=lambda: self._pick_prompt(None))
-        for p in self._presets():
-            nm = p.get("name", "?")
-            pmenu.add_command(
-                label=("✓ " if nm == cur_prompt else "   ") + nm,
-                command=lambda n=nm: self._pick_prompt(n))
-        pmenu.add_separator()
-        pmenu.add_command(label="Manage prompts…",
-                          command=self.open_system)
-        menu.add_cascade(label="Prompt: " + cur_prompt,
-                         menu=pmenu)
         levels = think_levels(self.model.get())
         if levels:
             tmenu = tk.Menu(menu, **style)
@@ -1269,11 +1341,16 @@ class App:
         menu.add_separator()
         menu.add_command(label="System prompt…",
                          command=self.open_system)
+        menu.add_command(label="Manage prompts…",
+                         command=self.open_system)
         menu.add_command(label="Memory…", command=self.open_memory)
         menu.add_command(label="Ollama controller…",
                          command=self.open_controller)
         menu.add_command(label="Model Manager…",
                          command=self.open_models)
+        menu.add_separator()
+        menu.add_command(label="Update Nexus Chat…",
+                         command=self.open_update)
         x = self.menu_btn.winfo_rootx()
         y = (self.menu_btn.winfo_rooty() +
              self.menu_btn.winfo_height())
@@ -1287,8 +1364,12 @@ class App:
         if name is None:
             self.store.settings["system_prompt"] = ""
             self.store.settings["prompt_name"] = ""
+        elif name == "Blank":
+            # The Blank preset: no system prompt at all.
+            self.store.settings["system_prompt"] = ""
+            self.store.settings["prompt_name"] = "Blank"
         else:
-            for p in self._presets():
+            for p in self._presets() + BUILTIN_PRESETS:
                 if p.get("name") == name:
                     self.store.settings["system_prompt"] = \
                         p.get("text", "")
@@ -1297,6 +1378,7 @@ class App:
             else:
                 return
         self.store.save_settings()
+        self._refresh_prompt_btn()
 
     def _save_preset(self, name, text):
         name = (name or "").strip()
@@ -1309,6 +1391,7 @@ class App:
         self.store.settings["system_prompt"] = text
         self.store.settings["prompt_name"] = name
         self.store.save_settings()
+        self._refresh_prompt_btn()
         return True
 
     def _delete_preset(self, name):
@@ -1320,6 +1403,7 @@ class App:
         if self.store.settings.get("prompt_name") == name:
             self.store.settings["prompt_name"] = ""
         self.store.save_settings()
+        self._refresh_prompt_btn()
         return True
 
     # ---- system prompt (glass box) -------------------------------
@@ -1362,12 +1446,16 @@ class App:
             text = editor.get("1.0", "end").strip()
             self.store.settings["system_prompt"] = text
             match = ""
-            for p in self._presets():
+            for p in self._presets() + BUILTIN_PRESETS:
                 if text and (p.get("text") or "").strip() == text:
                     match = p.get("name", "")
                     break
+            if not text and self.store.settings.get(
+                    "prompt_name") == "Blank":
+                match = "Blank"     # an untouched Blank stays Blank
             self.store.settings["prompt_name"] = match
             self.store.save_settings()
+            self._refresh_prompt_btn()
             saved.configure(text="Saved. The preview below already "
                                  "uses it.")
             refresh_preview()
@@ -2628,7 +2716,7 @@ class App:
                                           lambda: self._mdl_drain(mdl))
 
     # ---- in-app update -------------------------------------------------
-    # The sidebar's Update button: runs the platform setup inside
+    # The Menu's Update entry: runs the platform setup inside
     # the git checkout (setup.sh / setup.bat), which pulls the
     # latest code and reinstalls - the terminal flow, minus the
     # terminal. Output streams into the window as it happens, and

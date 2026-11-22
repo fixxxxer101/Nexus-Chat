@@ -5,6 +5,19 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.15.0 — 2026-11-21
+The Prompt picker returns to the header beside the model
+picker (it spent one release inside the Menu; Manage
+prompts… stays in the Menu as well), and the picker gains
+built-in presets: Deep Thinker, Creative Partner and Code
+Mentor - three different defaults to test against each
+other - plus Blank, which sends no system prompt at all
+(the model receives no system message; long-term memory
+rides in that message, so it is out too while Blank is
+active). Saving a user preset under a built-in's name
+shadows it. Also in this release: the sidebar's Update
+button moves into the Menu as "Update Nexus Chat…".
+
 ## 1.14.0 — 2026-11-21
 A downloads strip pinned to the base of the Model Manager:
 whatever is downloading right now - catalog or Hugging

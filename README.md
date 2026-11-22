@@ -51,10 +51,13 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   **Hugging Face search** finds any GGUF repo, with a quant
   picker per result (Q4_K_M by default).
 - **One Menu, thinking levels.** The header's **Menu** button
-  holds the prompt presets, the windows (System, Memory,
-  Ollama, Models) and a **thinking level** setting remembered
-  per model — low / medium / high for gpt-oss, off / on for
-  Qwen3-class models, exactly what each model supports.
+  holds the windows (System, Memory, Ollama, Models), Update,
+  and a **thinking level** setting remembered per model —
+  low / medium / high for gpt-oss, off / on for Qwen3-class
+  models, exactly what each model supports. The **Prompt**
+  picker sits beside the model picker, with built-in presets
+  (Deep Thinker, Creative Partner, Code Mentor) and a Blank
+  option that sends no system prompt at all.
 - **Modern rounded theme.** Pill-shaped buttons, floating
   rounded cards for the header, sidebar and input bar, big soft
   chat bubbles, and every text and list panel in the windows
@@ -95,12 +98,13 @@ title, and **every shipped change bumps it** — a feature bumps
 the middle number (1.1.0), a fix bumps the last (1.0.1). The
 full history is in [CHANGELOG.md](CHANGELOG.md).
 
-The sidebar's **Update** button does it from inside the app: it
-runs setup in your git checkout (which pulls the latest code
-first), streams the output into a window, and offers a Relaunch
-when it's done. No terminal needed, on either platform. The
-installers record the checkout's path (`repo.txt` in the data
-dir) so the button can always find it.
+The header Menu's **Update Nexus Chat…** entry does it from
+inside the app: it runs setup in your git checkout (which
+pulls the latest code first), streams the output into a
+window, and offers a Relaunch when it's done. No terminal
+needed, on either platform. The installers record the
+checkout's path (`repo.txt` in the data dir) so it can
+always be found.
 
 ## Where things live
 
