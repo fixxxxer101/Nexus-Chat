@@ -43,8 +43,10 @@ machine — no accounts, no cloud, nothing leaves the Pi.
 - **Streaming replies**, model picker (Qwen3 4B default, 1.7B fast
   mode, qwen2.5:3b the non-thinking option), Stop button
   mid-generation.
-- **Modern rounded theme.** Canvas-drawn rounded buttons and
-  chat-bubble messages — no sharp corners anywhere.
+- **Modern rounded theme.** Pill-shaped buttons, floating
+  rounded cards for the header, sidebar and input bar, big soft
+  chat bubbles, and every text and list panel in the windows
+  wrapped in a rounded frame — no sharp corners anywhere.
 - **Ollama controller built in.** The header's **Ollama** button
   opens the controller panel: live service status, which model is
   loaded and how much RAM it holds, and **Start**, **Stop** (frees

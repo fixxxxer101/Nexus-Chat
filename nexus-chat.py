@@ -90,9 +90,10 @@ THINK_GREEN = "#5fbf8a"
 ERROR = "#ff5a3c"
 FONT = "DejaVu Sans"
 MONO = "DejaVu Sans Mono"
-RADIUS_BTN = 11
-RADIUS_BUBBLE = 16
-RADIUS_FIELD = 14
+RADIUS_BUBBLE = 22
+RADIUS_FIELD = 20
+RADIUS_CARD = 18      # header / sidebar / bottom bar cards
+RADIUS_PANEL = 14     # text and list panels inside windows
 
 SYSTEM_PROMPT = (
     "You are the assistant inside Nexus Chat, a private local chat "
@@ -550,7 +551,7 @@ class RoundedButton(tk.Canvas):
     }
 
     def __init__(self, master, text="", command=None, kind="ghost",
-                 font=None, padx=13, pady=6, radius=RADIUS_BTN, **kw):
+                 font=None, padx=14, pady=6, radius=None, **kw):
         self._font = tkfont.Font(font=font) if font else tkfont.Font(
             family=FONT, size=10, weight="bold")
         self._padx, self._pady = padx, pady
@@ -614,7 +615,13 @@ class RoundedButton(tk.Canvas):
             fill = hover
         elif self._state == "press":
             fill = press
-        draw_rounded_rect(self, 1, 1, w - 1, h - 1, self._radius,
+        # radius=None means a true pill: ends fully rounded at
+        # half the button's height. Modern chat apps are pills and
+        # big soft corners everywhere - a slight radius reads as a
+        # rectangle with a defect, not as a style.
+        r = self._radius if self._radius is not None \
+            else (h - 2) / 2.0
+        draw_rounded_rect(self, 1, 1, w - 1, h - 1, r,
                           fill=fill, outline=outline, width=1)
         self.create_text(w / 2.0, h / 2.0, text=self._text,
                          fill=self._fg or textcol, font=self._font)
@@ -701,37 +708,39 @@ class App:
     # ---- layout ------------------------------------------------------
     def _build_layout(self):
         tk = self.tk
-        head = tk.Frame(self.root, bg=PANEL, height=54)
-        head.pack(side="top", fill="x")
+        head = BubbleFrame(self.root, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG, height=56)
+        head.pack(side="top", fill="x", padx=10, pady=(10, 2))
         head.pack_propagate(False)
         tk.Label(head, text="NEXUS CHAT", bg=PANEL, fg=GREEN,
-                 font=(FONT, 14, "bold")).pack(side="left", padx=14)
+                 font=(FONT, 14, "bold")).pack(side="left", padx=16)
         self.status = tk.Label(head, text="", bg=PANEL, fg=GREEN_DIM,
                                font=(FONT, 9))
-        self.status.pack(side="right", padx=12)
-        RoundedButton(head, text="Memory", kind="ghost",
+        self.status.pack(side="right", padx=14)
+        RoundedButton(head, text="Memory", kind="ghost", bg=PANEL,
                       font=(FONT, 10, "bold"),
                       command=self.open_memory).pack(side="right",
-                                                     pady=10)
-        RoundedButton(head, text="System", kind="ghost",
+                                                     pady=11)
+        RoundedButton(head, text="System", kind="ghost", bg=PANEL,
                       font=(FONT, 10, "bold"),
                       command=self.open_system).pack(side="right",
-                                                     padx=8, pady=10)
-        RoundedButton(head, text="Ollama", kind="ghost",
+                                                     padx=8, pady=11)
+        RoundedButton(head, text="Ollama", kind="ghost", bg=PANEL,
                       font=(FONT, 10, "bold"),
                       command=self.open_controller).pack(side="right",
-                                                         pady=10)
+                                                         pady=11)
         self._model_names = [self.model.get()]
         self.model_btn = RoundedButton(head, text=self.model.get(),
                                        kind="ghost", font=(FONT, 10),
+                                       bg=PANEL,
                                        command=self._model_popup)
-        self.model_btn.pack(side="right", pady=10)
+        self.model_btn.pack(side="right", pady=11)
         tk.Label(head, text="Model", bg=PANEL, fg=GREEN_DIM,
                  font=(FONT, 9)).pack(side="right", padx=(0, 6))
         self.prompt_btn = RoundedButton(head, text="", kind="ghost",
-                                        font=(FONT, 10),
+                                        font=(FONT, 10), bg=PANEL,
                                         command=self._prompt_popup)
-        self.prompt_btn.pack(side="right", pady=10)
+        self.prompt_btn.pack(side="right", pady=11)
         tk.Label(head, text="Prompt", bg=PANEL, fg=GREEN_DIM,
                  font=(FONT, 9)).pack(side="right", padx=(0, 6))
         self._refresh_prompt_btn()
@@ -739,22 +748,24 @@ class App:
         body = tk.Frame(self.root, bg=BG)
         body.pack(side="top", fill="both", expand=True)
 
-        side = tk.Frame(body, bg=PANEL, width=220)
-        side.pack(side="left", fill="y")
+        side = BubbleFrame(body, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG, width=224)
+        side.pack(side="left", fill="y", padx=(10, 0), pady=10)
         side.pack_propagate(False)
         RoundedButton(side, text="+  New Chat", kind="primary",
-                      font=(FONT, 11, "bold"), pady=8,
-                      command=self.new_chat).pack(fill="x", padx=10,
-                                                  pady=10)
+                      bg=PANEL, font=(FONT, 11, "bold"), pady=8,
+                      command=self.new_chat).pack(fill="x", padx=12,
+                                                  pady=12)
         self.chat_list = tk.Listbox(
             side, bg=PANEL, fg=GREEN, selectbackground="#17351f",
             selectforeground=GREEN, bd=0, highlightthickness=0,
             font=(FONT, 10), activestyle="none")
-        self.chat_list.pack(fill="both", expand=True, padx=6)
+        self.chat_list.pack(fill="both", expand=True, padx=8)
         self.chat_list.bind("<<ListboxSelect>>", self._sidebar_pick)
         RoundedButton(side, text="Delete chat", kind="quiet",
-                      font=(FONT, 9), command=self.delete_current
-                      ).pack(fill="x", padx=10, pady=10)
+                      bg=PANEL, font=(FONT, 9),
+                      command=self.delete_current
+                      ).pack(fill="x", padx=12, pady=12)
 
         main = tk.Frame(body, bg=BG)
         main.pack(side="left", fill="both", expand=True)
@@ -777,25 +788,26 @@ class App:
         self.canvas.bind_all("<Button-4>", self._on_wheel)
         self.canvas.bind_all("<Button-5>", self._on_wheel)
 
-        bar = tk.Frame(self.root, bg=PANEL)
-        bar.pack(side="bottom", fill="x")
+        bar = BubbleFrame(self.root, fill=PANEL, outline=BORDER,
+                          radius=RADIUS_CARD, bg=BG)
+        bar.pack(side="bottom", fill="x", padx=10, pady=(2, 10))
         field = BubbleFrame(bar, fill=PANEL2, outline=BORDER,
                             radius=RADIUS_FIELD, bg=PANEL)
         field.pack(side="left", fill="both", expand=True,
-                   padx=(10, 4), pady=10)
+                   padx=(12, 4), pady=12)
         self.input = tk.Text(field, height=3, bg=PANEL2, fg=GREEN,
                              insertbackground=ORANGE, bd=0,
                              highlightthickness=0,
                              font=(FONT, 11), wrap="word")
-        self.input.pack(fill="both", expand=True, padx=10, pady=7)
+        self.input.pack(fill="both", expand=True, padx=12, pady=8)
         self.input.bind("<Return>", self._enter)
         self.input.bind("<Shift-Return>", lambda e: None)
         self.input.focus_set()
         self.send_btn = RoundedButton(bar, text="Send", kind="primary",
-                                      font=(FONT, 12, "bold"),
+                                      bg=PANEL, font=(FONT, 12, "bold"),
                                       padx=22, pady=10,
                                       command=self._send_or_stop)
-        self.send_btn.pack(side="right", padx=10, pady=10)
+        self.send_btn.pack(side="right", padx=12, pady=12)
 
     # ---- model picker --------------------------------------------------
     def _model_popup(self):
@@ -929,12 +941,14 @@ class App:
                            "default (shown by Reset).",
                  bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
                  wraplength=640).pack(anchor="w", padx=12)
-        editor = tk.Text(win, height=7, bg=PANEL2, fg=GREEN,
+        ewrap = BubbleFrame(win, fill=PANEL2, outline=BORDER,
+                            radius=RADIUS_PANEL, bg=BG)
+        ewrap.pack(fill="x", padx=12, pady=8)
+        editor = tk.Text(ewrap, height=7, bg=PANEL2, fg=GREEN,
                          insertbackground=ORANGE, bd=0,
-                         highlightthickness=1,
-                         highlightbackground=BORDER, font=(FONT, 10),
+                         highlightthickness=0, font=(FONT, 10),
                          wrap="word")
-        editor.pack(fill="x", padx=12, pady=8)
+        editor.pack(fill="both", expand=True, padx=9, pady=7)
         editor.insert("1.0", self.store.settings.get(
             "system_prompt") or SYSTEM_PROMPT)
 
@@ -983,21 +997,25 @@ class App:
                  wraplength=640).pack(anchor="w", padx=12)
         prow = tk.Frame(win, bg=BG)
         prow.pack(fill="x", padx=12, pady=(6, 0))
-        plist = tk.Listbox(prow, height=4, bg=PANEL2, fg=GREEN, bd=0,
-                           highlightthickness=1,
-                           highlightbackground=BORDER,
+        pwrap = BubbleFrame(prow, fill=PANEL2, outline=BORDER,
+                            radius=RADIUS_PANEL, bg=BG)
+        pwrap.pack(side="left", fill="both", expand=True)
+        plist = tk.Listbox(pwrap, height=4, bg=PANEL2, fg=GREEN,
+                           bd=0, highlightthickness=0,
                            selectbackground="#17351f",
                            selectforeground=GREEN, font=(FONT, 10),
                            activestyle="none")
-        plist.pack(side="left", fill="both", expand=True)
+        plist.pack(fill="both", expand=True, padx=8, pady=6)
         pcol = tk.Frame(prow, bg=BG)
         pcol.pack(side="left", padx=(8, 0), fill="y")
-        name_ent = tk.Entry(pcol, bg=PANEL2, fg=GREEN,
+        nwrap = BubbleFrame(pcol, fill=PANEL2, outline=BORDER,
+                            radius=11, bg=BG)
+        nwrap.pack(anchor="w")
+        name_ent = tk.Entry(nwrap, bg=PANEL2, fg=GREEN,
                             insertbackground=ORANGE, bd=0,
-                            highlightthickness=1,
-                            highlightbackground=BORDER,
+                            highlightthickness=0,
                             font=(FONT, 10), width=16)
-        name_ent.pack(anchor="w")
+        name_ent.pack(padx=8, pady=5)
 
         def refresh_plist():
             plist.delete(0, "end")
@@ -1063,12 +1081,14 @@ class App:
                            "has one, then the messages themselves.",
                  bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
                  wraplength=640).pack(anchor="w", padx=12)
-        preview = tk.Text(win, bg=PANEL, fg=GREEN_DIM, bd=0,
-                          highlightthickness=1,
-                          highlightbackground=BORDER,
+        vwrap = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                            radius=RADIUS_PANEL, bg=BG)
+        vwrap.pack(fill="both", expand=True, padx=12, pady=8)
+        preview = tk.Text(vwrap, bg=PANEL, fg=GREEN_DIM, bd=0,
+                          highlightthickness=0,
                           font=(FONT, 9), wrap="word",
                           state="disabled")
-        preview.pack(fill="both", expand=True, padx=12, pady=8)
+        preview.pack(fill="both", expand=True, padx=9, pady=7)
 
         def refresh_preview():
             chat = self.current
@@ -1417,11 +1437,12 @@ class App:
                "acting": False, "poll_id": None, "drain_id": None}
         self._ctl = ctl
 
-        head = tk.Frame(win, bg=PANEL, height=54)
-        head.pack(side="top", fill="x")
+        head = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG, height=56)
+        head.pack(side="top", fill="x", padx=10, pady=(10, 0))
         head.pack_propagate(False)
         tk.Label(head, text="OLLAMA CONTROLLER", bg=PANEL, fg=GREEN,
-                 font=(FONT, 13, "bold")).pack(side="left", padx=14,
+                 font=(FONT, 13, "bold")).pack(side="left", padx=16,
                                                pady=14)
         ctl["pill"] = tk.Label(head, text="● CHECKING", bg=PANEL,
                                fg=GREEN_DIM, font=(FONT, 10, "bold"))
@@ -1473,13 +1494,16 @@ class App:
         tk.Label(win, text="INSTALLED MODELS", bg=BG, fg=GREEN_DIM,
                  font=(FONT, 8, "bold")).pack(anchor="w", padx=14,
                                               pady=(10, 2))
+        mwrap = BubbleFrame(win, fill=PANEL2, outline=BORDER,
+                            radius=RADIUS_PANEL, bg=BG)
+        mwrap.pack(fill="both", expand=True, padx=14, pady=(0, 6))
         ctl["models_box"] = tk.Listbox(
-            win, bg=PANEL2, fg=GREEN, bd=0, highlightthickness=1,
-            highlightbackground=BORDER, selectbackground="#17351f",
+            mwrap, bg=PANEL2, fg=GREEN, bd=0, highlightthickness=0,
+            selectbackground="#17351f",
             selectforeground=GREEN, font=(FONT, 10),
             activestyle="none", height=7)
-        ctl["models_box"].pack(fill="both", expand=True, padx=14,
-                               pady=(0, 6))
+        ctl["models_box"].pack(fill="both", expand=True, padx=8,
+                               pady=6)
         tk.Label(win, text="Stop frees ALL the RAM Ollama holds. "
                            "Start brings the service back; a model "
                            "loads on first use. Unload frees the "
@@ -1626,22 +1650,26 @@ class App:
                  font=(FONT, 11, "bold")).pack(anchor="w", padx=10, pady=(10, 2))
         tk.Label(win, text="Fed to the model at the start of every chat.",
                  bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(anchor="w", padx=10)
-        entries = tk.Listbox(win, bg=PANEL2, fg=GREEN,
+        ewrap = BubbleFrame(win, fill=PANEL2, outline=BORDER,
+                            radius=RADIUS_PANEL, bg=BG)
+        ewrap.pack(fill="x", padx=10, pady=4)
+        entries = tk.Listbox(ewrap, bg=PANEL2, fg=GREEN,
                              selectbackground=ORANGE,
                              selectforeground="#000000", bd=0,
-                             highlightthickness=1,
-                             highlightbackground=GREEN_FAINT,
+                             highlightthickness=0,
                              font=(FONT, 10), height=8)
-        entries.pack(fill="x", padx=10, pady=4)
+        entries.pack(fill="both", expand=True, padx=8, pady=6)
 
         addrow = tk.Frame(win, bg=BG)
         addrow.pack(fill="x", padx=10)
-        new_entry = tk.Entry(addrow, bg=PANEL2, fg=GREEN,
+        nwrap = BubbleFrame(addrow, fill=PANEL2, outline=BORDER,
+                            radius=11, bg=BG)
+        nwrap.pack(side="left", fill="x", expand=True)
+        new_entry = tk.Entry(nwrap, bg=PANEL2, fg=GREEN,
                              insertbackground=ORANGE, bd=0,
-                             highlightthickness=1,
-                             highlightbackground=GREEN_FAINT,
+                             highlightthickness=0,
                              font=(FONT, 10))
-        new_entry.pack(side="left", fill="x", expand=True)
+        new_entry.pack(fill="x", padx=8, pady=5)
 
         def reload_entries():
             entries.delete(0, "end")
@@ -1678,13 +1706,15 @@ class App:
                            "until you approve it", bg=BG, fg=ORANGE,
                  font=(FONT, 11, "bold")).pack(anchor="w", padx=10,
                                                pady=(12, 2))
-        pending = tk.Listbox(win, bg=PANEL2, fg=ORANGE,
+        pwrap = BubbleFrame(win, fill=PANEL2, outline=BORDER,
+                            radius=RADIUS_PANEL, bg=BG)
+        pwrap.pack(fill="x", padx=10, pady=4)
+        pending = tk.Listbox(pwrap, bg=PANEL2, fg=ORANGE,
                              selectbackground=ORANGE,
                              selectforeground="#000000", bd=0,
-                             highlightthickness=1,
-                             highlightbackground=GREEN_FAINT,
+                             highlightthickness=0,
                              font=(FONT, 10), height=5)
-        pending.pack(fill="x", padx=10, pady=4)
+        pending.pack(fill="both", expand=True, padx=8, pady=6)
 
         def reload_pending():
             pending.delete(0, "end")
@@ -1722,11 +1752,13 @@ class App:
                            "(origin + compressed topics)", bg=BG,
                  fg=GREEN, font=(FONT, 11, "bold")).pack(
                      anchor="w", padx=10, pady=(12, 2))
-        view = tk.Text(win, bg=PANEL2, fg=GREEN_DIM, bd=0,
-                       highlightthickness=1,
-                       highlightbackground=GREEN_FAINT,
+        vwrap = BubbleFrame(win, fill=PANEL2, outline=BORDER,
+                            radius=RADIUS_PANEL, bg=BG)
+        vwrap.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        view = tk.Text(vwrap, bg=PANEL2, fg=GREEN_DIM, bd=0,
+                       highlightthickness=0,
                        font=(FONT, 9), wrap="word", height=7)
-        view.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        view.pack(fill="both", expand=True, padx=8, pady=6)
         chat = self.current
         if chat:
             if chat.get("origin"):
