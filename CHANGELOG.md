@@ -5,6 +5,24 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.31.0 — 2026-11-22
+A running generation is always visible (Clint's
+report: start one, click an earlier image, and the run
+vanished from view). The history entry is now created
+the moment generation starts - "Generating · Step N of
+M · prompt" - and fills in with the finished image in
+the same place when it's done. The studio tracks what
+it's showing (the live job, a saved image, or the blank
+composer): progress and engine-log updates only paint
+when the live job is what's on screen, so browsing
+other images mid-run is no longer overwritten by the
+run's status - the list row carries the live progress
+instead. Clicking the Generating entry brings the live
+view back (progress bar, step, engine line); when the
+run finishes while another image is on screen, the
+view and the list selection stay exactly where they
+were and the finished image waits in the list.
+
 ## 1.30.0 — 2026-11-22
 Images carry their own recipes (Clint's ask): every
 generation now embeds its full settings INSIDE the PNG

@@ -79,7 +79,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.30.0"
+VERSION = "1.31.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -2654,6 +2654,13 @@ class App:
             threading.excepthook = _thread_excepthook
         log("%s v%s started" % (APP_NAME, VERSION))
         self._img_job = None           # running image generation
+        self._img_pending = None       # its placeholder history
+                                       # entry (created at start,
+                                       # filled in when done)
+        self._img_viewing = "new"      # what the studio shows:
+                                       # "job" (live generation),
+                                       # "record" (a saved image),
+                                       # "new" (blank composer)
         self._img_photo = None         # studio's shown PhotoImage
         self._img_current = None       # generation record shown
         self.img_model_path = None     # studio's picked model
@@ -4393,12 +4400,26 @@ class App:
                if self.img_vae_path and os.path.isfile(
                    self.img_vae_path) else None,
                "loras": loras}
+        job["frac"] = 0.0
+        job["last_log"] = ""
+        job["last_status"] = "Loading the model…"
         self._img_job = job
+        # The history entry exists from the START (Clint's
+        # model: create the tab first, fill in the image
+        # when it's done), so the run is visible in the
+        # list - with live progress - even after clicking
+        # away to another image.
+        self._img_pending = {"pending": True, "file": None,
+                             "prompt": prompt,
+                             "created": job["started"]}
+        self._img_viewing = "job"
         self._img_save_ui(seed=seed)
         iw["gen_btn"].configure(text="Cancel")
         iw["status"].configure(text="Loading the model…")
         iw["log"].configure(text="")
         self._img_bar(0)
+        self._img_recipe_hide()
+        self._img_history_refresh(select_pending=True)
         self._img_launch(job)
 
     def _img_launch(self, job):
@@ -4430,8 +4451,11 @@ class App:
                     os.remove(job["out"])
                 except OSError:
                     pass
-            iw["status"].configure(text="Cancelled.")
-            self._img_bar(0)
+            self._img_pending = None
+            self._img_refresh_keep_sel(shift=-1)
+            if self._img_viewing == "job":
+                iw["status"].configure(text="Cancelled.")
+                self._img_bar(0)
             return
         if rc != 0 or not os.path.isfile(job["out"]):
             fb = sd_fallback_path()
@@ -4454,16 +4478,21 @@ class App:
                         os.remove(job["out"])
                     except OSError:
                         pass
-                iw["status"].configure(
-                    text="The GPU build crashed (code %s) - "
-                         "retrying with the CPU build…" % rc)
+                if self._img_viewing == "job":
+                    iw["status"].configure(
+                        text="The GPU build crashed (code %s) - "
+                             "retrying with the CPU build…"
+                             % rc)
                 self._img_refresh_models()
                 self._img_launch(job)
                 return
-            iw["status"].configure(
-                text="The engine stopped (code %s) - its last "
-                     "line is below." % rc)
-            self._img_bar(0)
+            self._img_pending = None
+            self._img_refresh_keep_sel(shift=-1)
+            if self._img_viewing == "job":
+                iw["status"].configure(
+                    text="The engine stopped (code %s) - its "
+                         "last line is below." % rc)
+                self._img_bar(0)
             return
         rec = {"file": os.path.basename(job["out"]),
                "prompt": job["prompt"],
@@ -4507,6 +4536,19 @@ class App:
                 json.dump(rec, f)
         except OSError:
             pass
+        # The placeholder entry is filled in: it leaves
+        # the list and the finished record takes its place.
+        self._img_pending = None
+        if self._img_viewing != "job":
+            # He's looking at another image - the finished
+            # one waits in the list, view and selection
+            # untouched (the placeholder and the record
+            # swap at the same index, so the selection
+            # still points at what he's viewing).
+            self._img_refresh_keep_sel()
+            return
+        self._img_history_refresh(select=rec["file"])
+        self._img_viewing = "record"
         self._img_current = rec
         if job.get("seed_random"):
             # Show the seed that actually made this image -
@@ -4514,7 +4556,6 @@ class App:
             # the seed of record everywhere.
             iw["seed"].delete(0, "end")
             iw["seed"].insert(0, str(job["seed"]))
-        self._img_history_refresh(select=rec["file"])
         self._img_show(job["out"])
         self._img_recipe_show(rec)
         took = int(time.time() - job["started"])
@@ -4541,11 +4582,66 @@ class App:
         self._img_photo = img
         iw["view"].configure(image=img, text="")
 
-    def _img_history_refresh(self, select=None):
+    def _img_refresh_keep_sel(self, shift=0):
+        """History refresh that keeps the user's place in
+        the list: the selection index is restored after
+        the rebuild (shift -1 when the placeholder row
+        vanished without a record taking its place)."""
+        try:
+            cur = self.img_list.curselection()
+        except Exception:
+            cur = ()
+        self._img_history_refresh()
+        if cur:
+            idx = max(0, cur[0] + shift)
+            try:
+                self.img_list.selection_set(idx)
+                self.img_list.see(idx)
+            except Exception:
+                pass
+
+    def _img_pending_text(self):
+        p = self._img_pending or {}
+        snippet = (p.get("prompt") or "").replace(
+            "\n", " ")[:24]
+        job = self._img_job
+        st = (job or {}).get("last_status") or ""
+        st = st.rstrip("…").strip()
+        if st and st != "Loading the model":
+            return "Generating · %s · %s" % (st, snippet)
+        return "Generating…  %s" % snippet
+
+    def _img_pending_tick(self):
+        """Keep the placeholder row's progress current."""
+        if self._img_pending is None or not hasattr(
+                self, "img_list"):
+            return
+        try:
+            if self.img_list.size() == 0:
+                return
+            sel = self.img_list.curselection()
+            self.img_list.delete(0)
+            self.img_list.insert(0, self._img_pending_text())
+            if sel and sel[0] == 0:
+                self.img_list.selection_set(0)
+        except Exception:
+            pass
+
+    def _img_history_refresh(self, select=None,
+                             select_pending=False):
         records = list_generations()
+        if self._img_pending is not None:
+            records = [self._img_pending] + records
         self._img_records = records
         self.img_list.delete(0, "end")
         for i, r in enumerate(records):
+            if r.get("pending"):
+                self.img_list.insert("end",
+                                     self._img_pending_text())
+                if select_pending:
+                    self.img_list.selection_set(i)
+                    self.img_list.see(i)
+                continue
             when = time.strftime("%b %d %H:%M",
                                  time.localtime(r["created"]))
             snippet = (r.get("prompt") or "").replace(
@@ -4621,8 +4717,30 @@ class App:
         if not sel:
             return
         rec = self._img_records[sel[0]]
-        self._img_current = rec
         iw = self._imgw
+        if rec.get("pending"):
+            # The live view of the running generation:
+            # its progress lives in the job dict, rendered
+            # here and kept current by the drain while
+            # this is what's on screen.
+            self._img_viewing = "job"
+            self._img_current = None
+            self._img_recipe_hide()
+            job = self._img_job or {}
+            self._img_photo = None
+            iw["view"].configure(
+                image="", text="Generating…\nThe picture "
+                               "fills in here when it's "
+                               "done.")
+            iw["status"].configure(
+                text=job.get("last_status",
+                             "Loading the model…"))
+            iw["log"].configure(
+                text=(job.get("last_log") or "")[:150])
+            self._img_bar(job.get("frac", 0))
+            return
+        self._img_viewing = "record"
+        self._img_current = rec
         self._img_apply_recipe(rec)
         self._img_show(os.path.join(IMG_DIR, rec["file"]))
         self._img_recipe_show(rec)
@@ -4634,6 +4752,7 @@ class App:
 
     def _img_new(self):
         iw = self._imgw
+        self._img_viewing = "new"
         iw["prompt"].delete("1.0", "end")
         iw["seed"].delete(0, "end")
         iw["status"].configure(text="")
@@ -4653,6 +4772,8 @@ class App:
         if not sel:
             return
         rec = self._img_records[sel[0]]
+        if rec.get("pending"):
+            return          # still generating - Cancel stops it
         if not getattr(self, "_img_del_armed", False):
             self._img_del_armed = True
             self.img_del_btn.configure(text="Sure?")
@@ -5061,12 +5182,23 @@ class App:
                 elif kind == "version":
                     self._on_version(text)
                 elif kind == "img_log":
-                    self._imgw["log"].configure(text=text[:150])
+                    if self._img_job is not None:
+                        self._img_job["last_log"] = text
+                    if self._img_viewing == "job":
+                        self._imgw["log"].configure(
+                            text=text[:150])
                 elif kind == "img_step":
                     a, b = text
-                    self._img_bar(a / b if b else 0)
-                    self._imgw["status"].configure(
-                        text="Step %d of %d…" % (a, b))
+                    if self._img_job is not None:
+                        self._img_job["frac"] = \
+                            a / b if b else 0
+                        self._img_job["last_status"] = \
+                            "Step %d of %d…" % (a, b)
+                    self._img_pending_tick()
+                    if self._img_viewing == "job":
+                        self._img_bar(a / b if b else 0)
+                        self._imgw["status"].configure(
+                            text="Step %d of %d…" % (a, b))
                 elif kind == "img_done":
                     job, rc = text
                     if job is self._img_job:

@@ -28,7 +28,11 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   was actually used (blank seed means random, and the
   drawn seed is recorded) — and a **Use settings** button
   under any past image loads it all back for an exact
-  recreation.
+  recreation. A generation's history entry appears the
+  moment it starts, showing live step progress in the
+  list, and fills in with the image when it's done — so
+  you can browse other images mid-run without losing
+  sight of it.
 - **Thinking traces, when the model thinks.** Qwen3 replies carry
   a saved thinking trace, shown as a collapsible **▸ Thinking**
   block — click to read exactly how the model reasoned, click
