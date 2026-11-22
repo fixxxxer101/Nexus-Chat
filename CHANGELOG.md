@@ -5,6 +5,20 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.20.4 — 2026-11-21
+Bubble bottoms still unpainted (user and assistant
+bubbles alike, settled state, annotated screenshot):
+the text and spacing were always right - only the
+painted background stopped partway. A canvas shows only
+what fits inside its own box, so a background canvas
+left shorter than its drawing clips the rest away.
+Content-sized frames (bubbles, rows, code boxes) now
+draw to their content's full requested height and pin
+the background canvas to that height in pixels on every
+redraw, so the painted bubble always covers the whole
+message. The four layout cards keep layout-driven
+sizing.
+
 ## 1.20.3 — 2026-11-21
 A finished reply's bubble shrank in width the moment the
 stream ended: the rich renderer created its labels at a

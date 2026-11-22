@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.20.3"
+VERSION = "1.20.4"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1427,13 +1427,22 @@ class BubbleFrame(tk.Frame):
     and redraws itself whenever the frame changes size."""
 
     def __init__(self, master, fill, outline, radius=RADIUS_BUBBLE,
-                 bg=None, edge=None, **kw):
+                 bg=None, edge=None, hug=True, **kw):
         super().__init__(master,
                          bg=bg if bg is not None else BG, **kw)
         self._fill = fill
         self._outline = outline
         self._radius = radius
         self._edge = edge
+        # hug: the frame's size comes from its content (chat
+        # bubbles, rows, wrappers). Its painted background
+        # must cover the content's full requested height even
+        # if the frame's allocated height or the canvas's
+        # tracked height lags it - the failure that left
+        # bubbles with their bottom halves unpainted. The
+        # four layout cards pass hug=False: their size is
+        # imposed by the window layout, not their content.
+        self._hug = hug
         self._cv = tk.Canvas(self, bg=self.cget("bg"), bd=0,
                              highlightthickness=0)
         self._cv.place(x=0, y=0, relwidth=1, relheight=1)
@@ -1479,6 +1488,21 @@ class BubbleFrame(tk.Frame):
             h = self.winfo_height()
         if w <= 1 or h <= 1:
             return
+        if self._hug:
+            # Draw to the content's requested height if that
+            # is taller than the allocated height, and pin
+            # the underlay canvas to that height in pixels -
+            # a canvas only shows what fits inside its own
+            # box, so a canvas left shorter than the drawing
+            # clips the bubble's bottom half away no matter
+            # what was drawn on it.
+            try:
+                rh = self.winfo_reqheight()
+                if rh > h:
+                    h = rh
+                self._cv.place_configure(relheight=0, height=h)
+            except Exception:
+                pass
         self._cv.delete("all")
         if self._edge is not None:
             edge = self._edge
@@ -1649,7 +1673,7 @@ class App:
         self._frame_widgets = []
         head = BubbleFrame(self.root, fill=PANEL, outline=BORDER,
                            radius=RADIUS_CARD, bg=self._frame_bg(),
-                           edge=GREEN, height=56)
+                           edge=GREEN, height=56, hug=False)
         self._frame_widgets.append(head)
         head.pack(side="top", fill="x", padx=10, pady=(10, 2))
         head.pack_propagate(False)
@@ -1688,7 +1712,7 @@ class App:
 
         side = BubbleFrame(body, fill=PANEL, outline=BORDER,
                            radius=RADIUS_CARD, bg=self._frame_bg(),
-                           edge=GREEN, width=224)
+                           edge=GREEN, width=224, hug=False)
         self._frame_widgets.append(side)
         side.pack(side="left", fill="y", padx=(10, 0), pady=10)
         side.pack_propagate(False)
@@ -1712,7 +1736,8 @@ class App:
         # instead of floating loose on the window background.
         main_card = BubbleFrame(body, fill=PANEL, outline=BORDER,
                                 radius=RADIUS_CARD,
-                                bg=self._frame_bg(), edge=GREEN)
+                                bg=self._frame_bg(), edge=GREEN,
+                                hug=False)
         self._frame_widgets.append(main_card)
         main_card.pack(side="left", fill="both", expand=True,
                        padx=(10, 10), pady=10)
@@ -1737,7 +1762,7 @@ class App:
 
         bar = BubbleFrame(self.root, fill=PANEL, outline=BORDER,
                           radius=RADIUS_CARD, bg=self._frame_bg(),
-                          edge=GREEN)
+                          edge=GREEN, hug=False)
         self._frame_widgets.append(bar)
         bar.pack(side="bottom", fill="x", padx=10, pady=(2, 10))
         field = BubbleFrame(bar, fill=PANEL2, outline=BORDER,
