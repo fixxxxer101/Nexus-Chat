@@ -5,6 +5,20 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.33.0 — 2026-11-22
+The image info belongs to the image view, not the
+composer (Clint's layout call). The block under a shown
+image now carries the full metadata in the normal view
+too - the prompt, the recipe line with negative and
+filename, and Use settings - identical to the
+fullscreen bar. And it shows only while a saved image
+is actually on screen: New Image, the generating view
+and a fresh start never show it. Found on the way: a
+shown picture demanded a fixed 520px of height, which
+overflowed shorter windows and clipped the info block,
+prompt box and Generate button off the bottom - the
+picture now fits the space the studio actually has.
+
 ## 1.32.0 — 2026-11-22
 Two things. (1) The sidebar outline is fixed at the
 root: the sidebar's Chat/Image containers were packed

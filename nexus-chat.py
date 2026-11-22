@@ -79,7 +79,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.32.0"
+VERSION = "1.33.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -4075,15 +4075,25 @@ class App:
         iw["bar"] = tk.Canvas(inner, height=8, bg=PANEL2, bd=0,
                               highlightthickness=0)
         iw["bar"].pack(fill="x")
-        # The recipe row: shown while a saved image is on
-        # screen - what made it, and the button that loads
-        # those settings back into the studio.
+        # The info block: shown ONLY while a saved image is
+        # on screen - its prompt, its full metadata, and
+        # the button that loads those settings back into
+        # the studio. The composer (New Image) and the
+        # generating view never show it: there is no image
+        # there to take settings from.
         iw["recipe_row"] = tk.Frame(inner, bg=PANEL)
+        _itxt = tk.Frame(iw["recipe_row"], bg=PANEL)
+        _itxt.pack(side="left", fill="x", expand=True)
+        iw["recipe_prompt"] = tk.Label(
+            _itxt, text="", bg=PANEL, fg=GREEN,
+            font=(FONT, 10), anchor="w", justify="left",
+            wraplength=560)
+        iw["recipe_prompt"].pack(fill="x")
         iw["recipe_lbl"] = tk.Label(
-            iw["recipe_row"], text="", bg=PANEL, fg=GREEN_DIM,
-            font=(FONT, 9), anchor="w")
-        iw["recipe_lbl"].pack(side="left", fill="x",
-                              expand=True)
+            _itxt, text="", bg=PANEL, fg=GREEN_DIM,
+            font=(FONT, 9), anchor="w", justify="left",
+            wraplength=560)
+        iw["recipe_lbl"].pack(fill="x", pady=(2, 0))
         RoundedButton(iw["recipe_row"], text="Use settings",
                       kind="primary", font=(FONT, 10, "bold"),
                       bg=PANEL,
@@ -4608,7 +4618,18 @@ class App:
 
     def _img_show(self, path):
         iw = self._imgw
-        img = self._fit_photo(path, 900, 520)
+        # Fit the picture to the space the studio actually
+        # has: a fixed 520px box overflows shorter windows
+        # and the packer clips the info block, the prompt
+        # box and the Generate button off the bottom.
+        max_h = 520
+        try:
+            inner_h = iw["view"].master.master.winfo_height()
+            if inner_h > 100:
+                max_h = max(140, min(520, inner_h - 470))
+        except Exception:
+            pass
+        img = self._fit_photo(path, 900, max_h)
         if img is None:
             iw["status"].configure(
                 text="Cannot display that image.")
@@ -4653,11 +4674,7 @@ class App:
                  bg=PANEL, fg=GREEN, font=(FONT, 11),
                  wraplength=sw - 340, justify="left",
                  anchor="w").pack(fill="x")
-        meta = self._img_recipe_text(rec)
-        neg = (rec.get("negative") or "").strip()
-        if neg:
-            meta += "  ·  negative: %s" % neg[:80]
-        meta += "  ·  %s" % rec.get("file", "")
+        meta = self._img_meta_text(rec)
         tk.Label(txt, text=meta, bg=PANEL, fg=GREEN_DIM,
                  font=(FONT, 9), wraplength=sw - 340,
                  justify="left", anchor="w").pack(fill="x",
@@ -4772,10 +4789,25 @@ class App:
             txt += " · VAE %s" % rec["vae"]
         return txt
 
+    def _img_meta_text(self, rec):
+        """The full metadata line for a saved image: the
+        recipe, the negative when there is one, and the
+        file it lives in. Shared by the studio's info
+        block and the fullscreen bar so they never
+        diverge."""
+        txt = self._img_recipe_text(rec)
+        neg = (rec.get("negative") or "").strip()
+        if neg:
+            txt += "  ·  negative: %s" % neg[:80]
+        txt += "  ·  %s" % rec.get("file", "")
+        return txt
+
     def _img_recipe_show(self, rec):
         iw = self._imgw
+        iw["recipe_prompt"].configure(
+            text=(rec.get("prompt") or "")[:300])
         iw["recipe_lbl"].configure(
-            text=self._img_recipe_text(rec))
+            text=self._img_meta_text(rec))
         if not iw["recipe_row"].winfo_ismapped():
             iw["recipe_row"].pack(fill="x", pady=(4, 0),
                                   before=iw["status"])
