@@ -5,6 +5,18 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.36.1 — 2026-11-22
+README caught up (Clint: "its been neglected") and it
+now carries a status marker - "README status: current
+as of Nexus Gate vX.Y.Z" under the title, plus a
+machine-readable README-STATUS comment - so the next
+time it falls behind, the gap is visible at a glance:
+if the app's version is newer than the marker, the
+README needs a catch-up. The catch-up itself: Knowledge
+Bases documented, the self-update check, the studio's
+composer/view split and Pillow pane fit, corrected
+Menu paths, and the data dir's contents.
+
 ## 1.36.0 — 2026-11-22
 The viewer picture fits its pane (Clint's screenshot:
 a 512x512 moon shot rendered at ~128px in a big empty
