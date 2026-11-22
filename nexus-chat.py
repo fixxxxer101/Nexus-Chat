@@ -64,8 +64,16 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.10.0"
+VERSION = "1.10.1"
 IS_WINDOWS = os.name == "nt"
+# On Windows, a GUI app (pythonw, no console of its own) that
+# spawns a console program gets a brand-new terminal window
+# for it unless CREATE_NO_WINDOW is passed - the update run
+# did exactly that. With the flag, the child and everything
+# it spawns share a hidden console and all output stays in
+# the app's own window, like on the Pi. The constant only
+# exists on Windows, hence the getattr fallback.
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
 if IS_WINDOWS:
     _app_home = os.path.join(
@@ -595,7 +603,8 @@ def ctl_service(action):
         try:
             r = subprocess.run(["taskkill", "/IM", "ollama.exe",
                                 "/F"], capture_output=True,
-                               text=True, timeout=20)
+                               text=True, timeout=20,
+                               creationflags=CREATE_NO_WINDOW)
             if r.returncode == 0:
                 return True, ""
             out = (r.stderr or r.stdout or "").strip().splitlines()
@@ -1738,8 +1747,12 @@ class App:
             status.configure(text="Updating…")
 
             def work():
+                kw = {}
                 if IS_WINDOWS:
                     cmd = ["cmd", "/c", "setup.bat", "--no-pause"]
+                    # No terminal window: the update's output
+                    # belongs in this window's log, nowhere else.
+                    kw["creationflags"] = CREATE_NO_WINDOW
                 else:
                     cmd = ["bash", "setup.sh"]
                 try:
@@ -1747,7 +1760,7 @@ class App:
                         cmd, cwd=repo, stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, text=True,
-                        bufsize=1)
+                        bufsize=1, **kw)
                     for line in proc.stdout:
                         upd["queue"].put(("line", line.rstrip()))
                     rc = proc.wait()

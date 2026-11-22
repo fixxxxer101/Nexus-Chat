@@ -5,6 +5,15 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.10.1 — 2026-11-21
+Fix (Windows): updating from inside the app no longer opens
+a terminal window. The app runs without a console, so the
+cmd child got a brand-new one; it now spawns with
+CREATE_NO_WINDOW and the whole update — setup, git pull,
+model pulls — stays inside the Update window's log, exactly
+like the Pi. The controller's taskkill got the same flag so
+stopping Ollama doesn't flash a console either.
+
 ## 1.10.0 — 2026-11-21
 The chat window is contained: the transcript now lives in
 its own rounded, beveled card beside the sidebar card, tops
