@@ -30,10 +30,11 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   tables align in monospace with right-aligned numbers;
   headings, bold and inline code all look the way the model
   meant them.
-- **Chat background: black or transparent.** The Menu's
-  Settings submenu toggles the area behind the bubbles. On
-  Windows, Transparent lets the desktop show through around
-  the bubbles.
+- **Floating cards.** The Menu's Settings submenu toggles
+  the window frame - the background around the header,
+  sidebar, chat and input cards - between Black and
+  Transparent. On Windows, Transparent makes the cards float
+  on the desktop; the cards themselves stay solid.
 - **Chat logs.** Every conversation auto-saves and lists in the
   sidebar. Reopen any of them any time.
 - **Long-term memory, both modes.**

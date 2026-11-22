@@ -5,6 +5,16 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.17.0 — 2026-11-21
+The transparency moves to where it was meant to be: the
+FRAME around the cards. Menu > Settings > Frame now toggles
+the window's outer background - the root and the seams
+between the header, sidebar, chat and input cards -
+between Black and Transparent. Transparent makes the cards
+float on the desktop; the cards and everything inside them,
+chat included, stay solid. (The 1.16 setting aimed at the
+chat area instead; the saved setting carries over.)
+
 ## 1.16.1 — 2026-11-21
 Fix: on Windows, turning the chat background setting off
 passed an empty string to Tk's -transparentcolor, which on

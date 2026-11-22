@@ -73,7 +73,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.16.1"
+VERSION = "1.17.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1212,7 +1212,7 @@ class App:
         root.title("%s v%s" % (APP_NAME, VERSION))
         root.geometry("1040x700")
         root.minsize(780, 540)
-        root.configure(bg=BG)
+        root.configure(bg=self._frame_bg())
         if IS_WINDOWS:
             ico = os.path.join(os.path.dirname(DATA_DIR),
                                "nexus-chat.ico")
@@ -1224,7 +1224,7 @@ class App:
         self._build_layout()
         chats = self.store.sorted_chats()
         self.open_chat(chats[0] if chats else self.store.new_chat())
-        self._apply_chat_bg(rebuild=False)
+        self._apply_frame_bg()
         self.refresh_sidebar()
         self.root.after(60, self._drain)
         self.root.after(300, self._check_ollama)
@@ -1233,8 +1233,11 @@ class App:
     # ---- layout ------------------------------------------------------
     def _build_layout(self):
         tk = self.tk
+        self._frame_widgets = []
         head = BubbleFrame(self.root, fill=PANEL, outline=BORDER,
-                           radius=RADIUS_CARD, bg=BG, height=56)
+                           radius=RADIUS_CARD, bg=self._frame_bg(),
+                           height=56)
+        self._frame_widgets.append(head)
         head.pack(side="top", fill="x", padx=10, pady=(10, 2))
         head.pack_propagate(False)
         tk.Label(head, text="NEXUS CHAT", bg=PANEL, fg=GREEN,
@@ -1266,11 +1269,14 @@ class App:
                  font=(FONT, 9)).pack(side="right", padx=(0, 6))
         self._refresh_prompt_btn()
 
-        body = tk.Frame(self.root, bg=BG)
+        body = tk.Frame(self.root, bg=self._frame_bg())
+        self._frame_widgets.append(body)
         body.pack(side="top", fill="both", expand=True)
 
         side = BubbleFrame(body, fill=PANEL, outline=BORDER,
-                           radius=RADIUS_CARD, bg=BG, width=224)
+                           radius=RADIUS_CARD, bg=self._frame_bg(),
+                           width=224)
+        self._frame_widgets.append(side)
         side.pack(side="left", fill="y", padx=(10, 0), pady=10)
         side.pack_propagate(False)
         RoundedButton(side, text="+  New Chat", kind="primary",
@@ -1292,19 +1298,21 @@ class App:
         # sidebar card: same fill, same padding, tops aligned,
         # instead of floating loose on the window background.
         main_card = BubbleFrame(body, fill=PANEL, outline=BORDER,
-                                radius=RADIUS_CARD, bg=BG)
+                                radius=RADIUS_CARD,
+                                bg=self._frame_bg())
+        self._frame_widgets.append(main_card)
         main_card.pack(side="left", fill="both", expand=True,
                        padx=(10, 10), pady=10)
         main = tk.Frame(main_card, bg=PANEL)
         main.pack(fill="both", expand=True, padx=8, pady=8)
-        self.canvas = tk.Canvas(main, bg=self._chat_bg(), bd=0,
+        self.canvas = tk.Canvas(main, bg=PANEL, bd=0,
                                 highlightthickness=0)
         self.scrollbar = RoundedScrollbar(
             main, command=self.canvas.yview, bg=PANEL)
         self.canvas.configure(yscrollcommand=self._on_scroll)
         self.scrollbar.pack(side="right", fill="y", padx=(4, 0))
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.flow = tk.Frame(self.canvas, bg=self._chat_bg())
+        self.flow = tk.Frame(self.canvas, bg=PANEL)
         self._flow_win = self.canvas.create_window((0, 0),
                                                    window=self.flow,
                                                    anchor="nw")
@@ -1315,7 +1323,8 @@ class App:
         self.canvas.bind_all("<Button-5>", self._on_wheel)
 
         bar = BubbleFrame(self.root, fill=PANEL, outline=BORDER,
-                          radius=RADIUS_CARD, bg=BG)
+                          radius=RADIUS_CARD, bg=self._frame_bg())
+        self._frame_widgets.append(bar)
         bar.pack(side="bottom", fill="x", padx=10, pady=(2, 10))
         field = BubbleFrame(bar, fill=PANEL2, outline=BORDER,
                             radius=RADIUS_FIELD, bg=PANEL)
@@ -1440,24 +1449,31 @@ class App:
         self.store.settings["think_levels"] = d
         self.store.save_settings()
 
-    # ---- chat background ------------------------------------------
-    # The area behind the bubbles: solid (PANEL) or transparent.
-    # Transparent paints that area with a punch-through key
-    # colour and, on Windows, marks that colour transparent on
-    # the window, so the desktop shows through around the
-    # bubbles. (Tk on X11 has no per-colour punch-through; the
-    # setting is honoured where the platform supports it.)
+    # ---- window frame background ----------------------------------
+    # The frame around the cards (the root background and the
+    # seams between the header, sidebar, chat and input cards):
+    # solid BG, or transparent - the frame is painted with a
+    # punch-through key colour which Windows marks transparent
+    # on the window, so the cards float on the desktop. The
+    # cards and everything inside them stay solid. (Tk on X11
+    # has no per-colour punch-through; the setting is honoured
+    # where the platform supports it.) The settings key keeps
+    # its original name, chat_background.
 
-    def _chat_bg(self):
+    def _frame_bg(self):
         if self.store.settings.get("chat_background") == \
                 "transparent":
             return TRANSPARENT_KEY
-        return PANEL
+        return BG
 
-    def _apply_chat_bg(self, rebuild=True):
-        colour = self._chat_bg()
-        self.canvas.configure(bg=colour)
-        self.flow.configure(bg=colour)
+    def _apply_frame_bg(self):
+        colour = self._frame_bg()
+        self.root.configure(bg=colour)
+        for w in self._frame_widgets:
+            try:
+                w.configure(bg=colour)
+            except Exception:
+                pass
         if IS_WINDOWS:
             try:
                 self.root.attributes(
@@ -1466,13 +1482,11 @@ class App:
                     else TRANSPARENT_OFF)
             except Exception:
                 pass
-        if rebuild and self.current:
-            self.open_chat(self.current)
 
     def _set_chat_bg(self, mode):
         self.store.settings["chat_background"] = mode
         self.store.save_settings()
-        self._apply_chat_bg()
+        self._apply_frame_bg()
 
     # ---- the header Menu ------------------------------------------
     # One Menu button holds what used to be a row of header
@@ -1509,7 +1523,7 @@ class App:
                             ("transparent", "Transparent")):
             smenu.add_command(
                 label=("✓ " if cur_bg == mode else "   ")
-                + "Chat background: " + label,
+                + "Frame: " + label,
                 command=lambda md=mode: self._set_chat_bg(md))
         menu.add_cascade(label="Settings", menu=smenu)
         menu.add_separator()
@@ -1888,7 +1902,7 @@ class App:
         frame = BubbleFrame(self.flow, fill=fill,
                             outline=(BUBBLE_USER_EDGE if user
                                      else BUBBLE_BOT_EDGE),
-                            bg=self._chat_bg())
+                            bg=PANEL)
         frame.pack(anchor="e" if user else "w", padx=12, pady=5)
         self.blocks.append(frame)
         tk.Label(frame, text="YOU" if user else "NEXUS", bg=fill,
