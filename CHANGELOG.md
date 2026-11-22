@@ -5,6 +5,10 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.19.1 — 2026-11-21
+The from-scratch installer is renamed to
+Nexus_Chat_Installer_Windows.bat. Same script, new name.
+
 ## 1.19.0 — 2026-11-21
 from-scratch.bat: one double-click installs Nexus Chat on
 a fresh Windows PC. It installs Python 3, Git for Windows

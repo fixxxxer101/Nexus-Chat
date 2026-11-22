@@ -94,8 +94,9 @@ icon.) Then click the **Nexus Chat** icon on the desktop.
 
 ## Setup on Windows
 
-**From scratch:** download **`from-scratch.bat`** from this
-repo and double-click it. It installs Python 3, Git and
+**From scratch:** download
+**`Nexus_Chat_Installer_Windows.bat`** from this repo and
+double-click it. It installs Python 3, Git and
 Ollama if they're missing, clones this repo to
 `%USERPROFILE%\Nexus-Chat`, then runs setup and launches the
 app. Re-running it is safe — finished steps are skipped.
