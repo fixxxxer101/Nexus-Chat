@@ -76,7 +76,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.26.0"
+VERSION = "1.27.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1086,6 +1086,16 @@ def gb(nbytes):
     return "%.1f GB" % (nbytes / 1e9)
 
 
+def fmt_bytes(nbytes):
+    if nbytes >= 1e9:
+        return "%.1f GB" % (nbytes / 1e9)
+    if nbytes >= 1e6:
+        return "%.0f MB" % (nbytes / 1e6)
+    if nbytes >= 1e3:
+        return "%.0f KB" % (nbytes / 1e3)
+    return "%d B" % nbytes
+
+
 def fmt_speed(bps):
     mb = bps / 1e6
     if mb >= 100:
@@ -1093,6 +1103,232 @@ def fmt_speed(bps):
     if mb >= 1:
         return "%.1f MB/s" % mb
     return "%.0f KB/s" % (bps / 1e3)
+
+
+# ------------------------------------------------------- image generation
+# The image engine is sd-cli from stable-diffusion.cpp: one
+# small binary, no Python, no torch, no ComfyUI - the app
+# must work on any machine, so the engine is a standalone
+# program the same way Ollama is. Setup installs the build
+# that matches the machine (Windows: CUDA for NVIDIA,
+# Vulkan for AMD/Intel, CPU as the fallback; Linux: built
+# from source) into DATA_DIR/sd/ and records which backend
+# it picked in backend.txt beside the binary. The baseline
+# image model is REQUIRED, downloaded by setup like the
+# required chat models; more can be downloaded or linked
+# in place from the Model Manager.
+SD_RELEASE = "master-1106-532d2c1"
+SD_DIR = os.path.join(DATA_DIR, "sd")
+SD_CLI = os.environ.get("NEXUS_SD_CLI") or os.path.join(
+    SD_DIR, "sd-cli.exe" if IS_WINDOWS else "sd-cli")
+IMG_MODELS_DIR = os.path.join(DATA_DIR, "image-models")
+IMG_DIR = os.path.join(DATA_DIR, "images")
+IMG_EXTS = {".safetensors", ".ckpt", ".gguf"}
+IMG_FOLDER_EXTS = {".safetensors", ".ckpt"}
+IMG_BASELINE_FILE = "DreamShaper8_pruned.safetensors"
+IMG_BASELINE_URL = "https://civitai.com/api/download/models/128713"
+IMG_BASELINE_SHA256 = \
+    "879db523c30d3b9017143d56705015e15a2cb5628762c11d086fed9538abd7fd"
+IMG_BASELINE = {
+    "file": IMG_BASELINE_FILE, "name": "DreamShaper 8",
+    "family": "SD 1.5", "size": "~2.1 GB", "pc_only": False,
+    "url": IMG_BASELINE_URL, "sha256": IMG_BASELINE_SHA256,
+    "blurb": "The required baseline: one SD 1.5 model that "
+             "does a bit of everything - art, people, anime, "
+             "photo-ish - and runs anywhere, even the Pi "
+             "(slowly). VAE baked in, nothing else to fetch.",
+    "defaults": {"steps": 20, "cfg": 7.0, "sampler": "euler_a",
+                 "size": "512x512"}}
+IMAGE_MODELS = [
+    {"file": "DreamShaper8_LCM.safetensors",
+     "name": "DreamShaper 8 LCM", "family": "SD 1.5 LCM",
+     "size": "~2.0 GB", "pc_only": False,
+     "url": "https://huggingface.co/Lykon/DreamShaper/resolve/"
+            "main/DreamShaper8_LCM.safetensors",
+     "blurb": "DreamShaper distilled for speed: 4-8 steps at "
+              "CFG ~2 with the LCM sampler. A little quality "
+              "traded for a LOT of time - the Pi pick.",
+     "defaults": {"steps": 8, "cfg": 2.0, "sampler": "lcm",
+                  "size": "512x512"}},
+    {"file": "DreamShaperXL_Turbo.safetensors",
+     "name": "DreamShaper XL Turbo", "family": "SDXL Turbo",
+     "size": "~6.5 GB", "pc_only": True,
+     "url": "https://huggingface.co/Lykon/DreamShaper/resolve/"
+            "main/DreamShaperXL_Turbo_dpmppSdeKarras_half_"
+            "pruned_6.safetensors",
+     "blurb": "SDXL quality in a handful of steps at "
+              "1024x1024. Big, and it wants a GPU - on the "
+              "Pi it will crawl.",
+     "defaults": {"steps": 8, "cfg": 2.0,
+                  "sampler": "dpm++2m_sde", "size": "1024x1024"}},
+    {"file": "sd_xl_base_1.0.safetensors",
+     "name": "SDXL Base 1.0", "family": "SDXL",
+     "size": "~6.5 GB", "pc_only": True,
+     "url": "https://huggingface.co/stabilityai/"
+            "stable-diffusion-xl-base-1.0/resolve/main/"
+            "sd_xl_base_1.0.safetensors",
+     "blurb": "Stability's own SDXL base model: 1024px, "
+              "25+ steps, the reference everything else is "
+              "tuned from. PC-class.",
+     "defaults": {"steps": 25, "cfg": 7.0,
+                  "sampler": "euler_a", "size": "1024x1024"}},
+]
+IMG_SIZES = ["512x512", "512x768", "768x512", "768x768",
+             "1024x1024", "1024x576", "576x1024"]
+IMG_SAMPLERS = [("euler_a", "Euler a"), ("euler", "Euler"),
+                ("dpm++2m", "DPM++ 2M"),
+                ("dpm++2m_sde", "DPM++ 2M SDE"),
+                ("lcm", "LCM"), ("ddim_trailing", "DDIM"),
+                ("heun", "Heun")]
+_STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+
+
+class _DownloadCancelled(Exception):
+    pass
+
+
+def sd_backend():
+    """Which engine build setup installed here: 'cuda',
+    'vulkan', 'cpu', 'source', or None when no marker (and
+    maybe no engine) exists."""
+    try:
+        with open(os.path.join(SD_DIR, "backend.txt")) as f:
+            return f.read().strip().lower() or None
+    except OSError:
+        return None
+
+
+def sd_cli_path():
+    return SD_CLI if os.path.isfile(SD_CLI) else None
+
+
+def img_catalog_entry(filename):
+    if filename == IMG_BASELINE_FILE:
+        return IMG_BASELINE
+    for m in IMAGE_MODELS:
+        if m["file"] == filename:
+            return m
+    return None
+
+
+def img_pretty_name(filename):
+    e = img_catalog_entry(filename)
+    if e:
+        return e["name"]
+    return os.path.splitext(filename)[0]
+
+
+def scan_image_dirs(dirs):
+    """Checkpoint files under the given folders, recursively,
+    subfolders followed, loops guarded - the image twin of
+    scan_model_dirs. Only .safetensors/.ckpt: a folder's
+    .gguf files are chat models until proven otherwise."""
+    found, seen = [], set()
+    for d in dirs:
+        if not d or not os.path.isdir(d):
+            continue
+        for root, sub, files in os.walk(d, followlinks=True):
+            real = os.path.realpath(root)
+            if real in seen:
+                sub[:] = []
+                continue
+            seen.add(real)
+            for fn in sorted(files):
+                if os.path.splitext(fn)[1].lower() \
+                        in IMG_FOLDER_EXTS:
+                    found.append(os.path.join(root, fn))
+    return found
+
+
+def image_model_entries(settings):
+    """Every image model the studio can pick: the app's own
+    downloads first (baseline first among them), then
+    checkpoints linked in place from the user's folders.
+    Each: {name, file, path, where}."""
+    out, seen = [], set()
+
+    def add(path, where):
+        rp = os.path.realpath(path)
+        if rp in seen:
+            return
+        seen.add(rp)
+        fn = os.path.basename(path)
+        out.append({"name": img_pretty_name(fn), "file": fn,
+                    "path": path, "where": where})
+
+    if os.path.isdir(IMG_MODELS_DIR):
+        names = sorted(os.listdir(IMG_MODELS_DIR))
+        names.sort(key=lambda n: n != IMG_BASELINE_FILE)
+        for fn in names:
+            if os.path.splitext(fn)[1].lower() in IMG_EXTS:
+                add(os.path.join(IMG_MODELS_DIR, fn),
+                    "Nexus Gate")
+    for p in scan_image_dirs(settings.get("img_dirs") or []):
+        add(p, "In place")
+    return out
+
+
+def list_generations():
+    """Saved generations, newest first: the sidecar JSON
+    records written next to each PNG in IMG_DIR."""
+    out = []
+    if os.path.isdir(IMG_DIR):
+        for fn in os.listdir(IMG_DIR):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(IMG_DIR, fn)) as f:
+                    rec = json.load(f)
+                if os.path.isfile(
+                        os.path.join(IMG_DIR, rec["file"])):
+                    out.append(rec)
+            except Exception:
+                continue
+    out.sort(key=lambda r: r.get("created", 0), reverse=True)
+    return out
+
+
+def build_sd_args(cli, job):
+    w, h = job["size"].lower().split("x")
+    args = [cli, "-m", job["model_path"],
+            "-p", job["prompt"],
+            "--steps", str(job["steps"]),
+            "--cfg-scale", str(job["cfg"]),
+            "-W", w, "-H", h,
+            "--seed", str(job["seed"]),
+            "--sampling-method", job["sampler"],
+            "-o", job["out"]]
+    if job.get("negative"):
+        args += ["-n", job["negative"]]
+    return args
+
+
+def run_sd_image(job, emit):
+    """Run sd-cli for one generation, on the caller's
+    thread. Progress and log lines go to emit(kind, payload)
+    as ('step', (i, n)), ('log', line); the result is
+    ('done', returncode). The Popen handle is stored on the
+    job dict so the app can terminate it (Cancel)."""
+    args = build_sd_args(sd_cli_path() or SD_CLI, job)
+    emit("log", "sd-cli " + " ".join(
+        a if " " not in a else '"%s"' % a for a in args[1:]))
+    proc = subprocess.Popen(
+        args, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True,
+        encoding="utf-8", errors="replace", bufsize=1,
+        creationflags=CREATE_NO_WINDOW if IS_WINDOWS else 0)
+    job["proc"] = proc
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        emit("log", line)
+        steps = _STEP_RE.findall(line)
+        if steps:
+            a, b = int(steps[-1][0]), int(steps[-1][1])
+            if 0 < b <= 10000 and 0 <= a <= b:
+                emit("step", (a, b))
+    emit("done", proc.wait())
 
 
 # ------------------------------------------------------- model locations
@@ -2083,6 +2319,12 @@ class App:
         self._opw = None               # Opacity window state
         self._pull = None              # in-flight model download
         self._kbwin = None             # Knowledge Bases window
+        self._fdl = None               # in-flight file download
+        self._img_job = None           # running image generation
+        self._img_photo = None         # studio's shown PhotoImage
+        self._img_current = None       # generation record shown
+        self.img_model_path = None     # studio's picked model
+        self.mode = self.store.settings.get("mode", "chat")
         self._send_aborted = False     # Stop during a KB search
 
         root.title("%s v%s" % (APP_NAME, VERSION))
@@ -2197,20 +2439,50 @@ class App:
         self._frame_widgets.append(side)
         side.pack(side="left", fill="y", padx=(10, 0), pady=10)
         side.pack_propagate(False)
-        RoundedButton(side, text="+  New Chat", kind="primary",
+        # Mode pills: the sidebar and the main card swap
+        # between Chat and the Image studio.
+        self.pills = tk.Frame(side, bg=PANEL)
+        self.pills.pack(fill="x", padx=12, pady=(12, 0))
+        self._render_pills()
+        self.side_chat = tk.Frame(side, bg=PANEL)
+        self.side_chat.pack(fill="both", expand=True)
+        RoundedButton(self.side_chat, text="+  New Chat",
+                      kind="primary",
                       bg=PANEL, font=(FONT, 11, "bold"), pady=8,
                       command=self.new_chat).pack(fill="x", padx=12,
                                                   pady=12)
         self.chat_list = tk.Listbox(
-            side, bg=PANEL, fg=GREEN, selectbackground="#17351f",
+            self.side_chat, bg=PANEL, fg=GREEN,
+            selectbackground="#17351f",
             selectforeground=GREEN, bd=0, highlightthickness=0,
             font=(FONT, 10), activestyle="none")
         self.chat_list.pack(fill="both", expand=True, padx=8)
-        self.chat_list.bind("<<ListboxSelect>>", self._sidebar_pick)
-        RoundedButton(side, text="Delete chat", kind="quiet",
+        self.chat_list.bind("<<ListboxSelect>>",
+                            self._sidebar_pick)
+        RoundedButton(self.side_chat, text="Delete chat",
+                      kind="quiet",
                       bg=PANEL, font=(FONT, 9),
                       command=self.delete_current
                       ).pack(fill="x", padx=12, pady=(12, 12))
+        self.side_img = tk.Frame(side, bg=PANEL)
+        RoundedButton(self.side_img, text="+  New Image",
+                      kind="primary",
+                      bg=PANEL, font=(FONT, 11, "bold"), pady=8,
+                      command=self._img_new).pack(fill="x", padx=12,
+                                                  pady=12)
+        self.img_list = tk.Listbox(
+            self.side_img, bg=PANEL, fg=GREEN,
+            selectbackground="#17351f",
+            selectforeground=GREEN, bd=0, highlightthickness=0,
+            font=(FONT, 10), activestyle="none")
+        self.img_list.pack(fill="both", expand=True, padx=8)
+        self.img_list.bind("<<ListboxSelect>>",
+                           self._img_sidebar_pick)
+        self.img_del_btn = RoundedButton(
+            self.side_img, text="Delete image", kind="quiet",
+            bg=PANEL, font=(FONT, 9),
+            command=self._img_delete)
+        self.img_del_btn.pack(fill="x", padx=12, pady=(12, 12))
 
         # The chat lives in its own card, a sibling of the
         # sidebar card: same fill, same padding, tops aligned,
@@ -2220,8 +2492,18 @@ class App:
                                 bg=self._frame_bg(), edge=GREEN,
                                 hug=False)
         self._frame_widgets.append(main_card)
+        self.main_card = main_card
         main_card.pack(side="left", fill="both", expand=True,
                        padx=(10, 10), pady=10)
+        # The image studio lives in a twin card, swapped with
+        # the chat card by the mode pills.
+        self.img_card = BubbleFrame(body, fill=PANEL,
+                                    outline=BORDER,
+                                    radius=RADIUS_CARD,
+                                    bg=self._frame_bg(),
+                                    edge=GREEN, hug=False)
+        self._frame_widgets.append(self.img_card)
+        self._build_image_studio(self.img_card)
         main = tk.Frame(main_card, bg=PANEL)
         main.pack(fill="both", expand=True, padx=8, pady=8)
         self.canvas = tk.Canvas(main, bg=PANEL, bd=0,
@@ -2245,6 +2527,7 @@ class App:
                           radius=RADIUS_CARD, bg=self._frame_bg(),
                           edge=GREEN, hug=False)
         self._frame_widgets.append(bar)
+        self.bar = bar
         bar.pack(side="bottom", fill="x", padx=10, pady=(2, 10))
         field = BubbleFrame(bar, fill=PANEL2, outline=BORDER,
                             radius=RADIUS_FIELD, bg=PANEL)
@@ -2263,6 +2546,8 @@ class App:
                                       padx=22, pady=10,
                                       command=self._send_or_stop)
         self.send_btn.pack(side="right", padx=12, pady=12)
+        if self.mode == "image":
+            self._set_mode("image")
 
     # ---- model picker --------------------------------------------------
     def _model_popup(self):
@@ -3315,6 +3600,571 @@ class App:
             entry.delete(0, "end")
             entry.insert(0, path)
 
+    # ---- mode switch + image studio -----------------------------------
+    def _render_pills(self):
+        tk = self.tk
+        for c in self.pills.winfo_children():
+            c.destroy()
+        for mode, label in (("chat", "Chat"), ("image", "Image")):
+            RoundedButton(
+                self.pills, text=label,
+                kind="primary" if self.mode == mode else "ghost",
+                bg=PANEL, font=(FONT, 10, "bold"),
+                command=lambda m=mode: self._set_mode(m)
+                ).pack(side="left", fill="x", expand=True,
+                       padx=(0, 6) if mode == "chat" else 0)
+
+    def _set_mode(self, mode):
+        if mode not in ("chat", "image"):
+            return
+        self.mode = mode
+        self.store.settings["mode"] = mode
+        self.store.save_settings()
+        self._render_pills()
+        if mode == "chat":
+            self.side_img.pack_forget()
+            self.img_card.pack_forget()
+            self.side_chat.pack(fill="both", expand=True)
+            self.main_card.pack(side="left", fill="both",
+                                expand=True, padx=(10, 10),
+                                pady=10)
+            self.bar.pack(side="bottom", fill="x", padx=10,
+                          pady=(2, 10))
+        else:
+            self.side_chat.pack_forget()
+            self.main_card.pack_forget()
+            self.bar.pack_forget()
+            self.side_img.pack(fill="both", expand=True)
+            self.img_card.pack(side="left", fill="both",
+                               expand=True, padx=(10, 10),
+                               pady=10)
+            self._img_refresh_models()
+            self._img_history_refresh()
+
+    def _build_image_studio(self, card):
+        tk = self.tk
+        iw = {}
+        self._imgw = iw
+        ui = self.store.settings.get("img_ui") or {}
+        inner = tk.Frame(card, bg=PANEL)
+        inner.pack(fill="both", expand=True, padx=8, pady=8)
+        top = tk.Frame(inner, bg=PANEL)
+        top.pack(fill="x")
+        tk.Label(top, text="IMAGE STUDIO", bg=PANEL, fg=GREEN,
+                 font=(FONT, 12, "bold")).pack(side="left")
+        iw["engine"] = tk.Label(top, text="", bg=PANEL,
+                                fg=GREEN_DIM, font=(FONT, 9))
+        iw["engine"].pack(side="right")
+        mrow = tk.Frame(inner, bg=PANEL)
+        mrow.pack(fill="x", pady=(8, 0))
+        tk.Label(mrow, text="Model", bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(side="left", padx=(0, 6))
+        iw["model_btn"] = RoundedButton(
+            mrow, text="—", kind="ghost", font=(FONT, 10),
+            bg=PANEL, command=self._img_model_popup)
+        iw["model_btn"].pack(side="left")
+        RoundedButton(mrow, text="Image models…", kind="quiet",
+                      bg=PANEL, font=(FONT, 9),
+                      command=self.open_models
+                      ).pack(side="right")
+        view_frame = tk.Frame(inner, bg=PANEL)
+        view_frame.pack(fill="both", expand=True, pady=(10, 6))
+        iw["view"] = tk.Label(
+            view_frame, bg=PANEL, fg=GREEN_DIM, font=(FONT, 11),
+            text="Write a prompt below and press Generate.\n"
+                 "Past images live in the list on the left.")
+        iw["view"].pack(expand=True)
+        iw["bar"] = tk.Canvas(inner, height=8, bg=PANEL2, bd=0,
+                              highlightthickness=0)
+        iw["bar"].pack(fill="x")
+        iw["status"] = tk.Label(inner, text="", bg=PANEL,
+                                fg=GREEN, font=(FONT, 9),
+                                anchor="w")
+        iw["status"].pack(fill="x", pady=(4, 0))
+        iw["log"] = tk.Label(inner, text="", bg=PANEL,
+                             fg=GREEN_DIM, font=(FONT, 8),
+                             anchor="w")
+        iw["log"].pack(fill="x")
+        ctl = tk.Frame(inner, bg=PANEL)
+        ctl.pack(fill="x", pady=(6, 0))
+
+        def ctl_label(text):
+            tk.Label(ctl, text=text, bg=PANEL, fg=GREEN_DIM,
+                     font=(FONT, 9)).pack(side="left",
+                                           padx=(10, 4))
+
+        ctl_label("Size")
+        self._img_size = ui.get("size",
+                                IMG_BASELINE["defaults"]["size"])
+        iw["size_btn"] = RoundedButton(
+            ctl, text=self._img_size.replace("x", "×"),
+            kind="ghost", font=(FONT, 10), bg=PANEL,
+            command=self._img_size_popup)
+        iw["size_btn"].pack(side="left")
+        ctl_label("Steps")
+        iw["steps"] = tk.Entry(ctl, width=5, bg=PANEL2,
+                               fg=GREEN, bd=0,
+                               highlightthickness=0,
+                               font=(FONT, 10),
+                               insertbackground=ORANGE)
+        iw["steps"].pack(side="left")
+        iw["steps"].insert(0, str(ui.get(
+            "steps", IMG_BASELINE["defaults"]["steps"])))
+        ctl_label("CFG")
+        iw["cfg"] = tk.Entry(ctl, width=5, bg=PANEL2, fg=GREEN,
+                             bd=0, highlightthickness=0,
+                             font=(FONT, 10),
+                             insertbackground=ORANGE)
+        iw["cfg"].pack(side="left")
+        iw["cfg"].insert(0, str(ui.get(
+            "cfg", IMG_BASELINE["defaults"]["cfg"])))
+        ctl_label("Sampler")
+        self._img_sampler = ui.get(
+            "sampler", IMG_BASELINE["defaults"]["sampler"])
+        iw["sampler_btn"] = RoundedButton(
+            ctl, text=self._img_sampler_label(), kind="ghost",
+            font=(FONT, 10), bg=PANEL,
+            command=self._img_sampler_popup)
+        iw["sampler_btn"].pack(side="left")
+        ctl_label("Seed")
+        iw["seed"] = tk.Entry(ctl, width=11, bg=PANEL2,
+                              fg=GREEN, bd=0,
+                              highlightthickness=0,
+                              font=(FONT, 10),
+                              insertbackground=ORANGE)
+        iw["seed"].pack(side="left")
+        if ui.get("seed") not in (None, ""):
+            iw["seed"].insert(0, str(ui["seed"]))
+        tk.Label(inner, text="PROMPT", bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(anchor="w", pady=(10, 2))
+        iw["prompt"] = tk.Text(inner, height=3, bg=PANEL2,
+                               fg=GREEN, insertbackground=ORANGE,
+                               bd=0, highlightthickness=0,
+                               font=(FONT, 11), wrap="word")
+        iw["prompt"].pack(fill="x")
+        nrow = tk.Frame(inner, bg=PANEL)
+        nrow.pack(fill="x", pady=(8, 0))
+        tk.Label(nrow, text="Negative", bg=PANEL,
+                 fg=GREEN_DIM, font=(FONT, 9)).pack(side="left",
+                                                    padx=(0, 6))
+        iw["negative"] = tk.Entry(nrow, bg=PANEL2, fg=GREEN,
+                                  bd=0, highlightthickness=0,
+                                  font=(FONT, 10),
+                                  insertbackground=ORANGE)
+        iw["negative"].pack(side="left", fill="x", expand=True)
+        iw["negative"].insert(0, ui.get("negative", ""))
+        iw["gen_btn"] = RoundedButton(
+            inner, text="Generate", kind="primary", bg=PANEL,
+            font=(FONT, 12, "bold"), pady=10,
+            command=self._img_generate_or_cancel)
+        iw["gen_btn"].pack(fill="x", pady=(12, 2))
+
+    def _img_sampler_label(self):
+        for key, label in IMG_SAMPLERS:
+            if key == self._img_sampler:
+                return label
+        return self._img_sampler
+
+    def _img_popup(self, btn, items, pick):
+        tk = self.tk
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL2,
+                       fg=GREEN, activebackground=GREEN_FAINT,
+                       activeforeground=GREEN, bd=0,
+                       font=(FONT, 10))
+        for label, value in items:
+            menu.add_command(label=label,
+                             command=lambda v=value: pick(v))
+        x = btn.winfo_rootx()
+        y = btn.winfo_rooty() + btn.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _img_model_popup(self):
+        entries = image_model_entries(self.store.settings)
+        if not entries:
+            self._imgw["status"].configure(
+                text="No image models yet - open Image models… "
+                     "to download the baseline.")
+            return
+        self._img_popup(
+            self._imgw["model_btn"],
+            [(e["name"] + "  ·  " + e["where"], e["path"])
+             for e in entries],
+            self._img_pick_model)
+
+    def _img_pick_model(self, path):
+        self.img_model_path = path
+        self._imgw["model_btn"].configure(
+            text=img_pretty_name(os.path.basename(path)))
+        entry = img_catalog_entry(os.path.basename(path))
+        if entry:
+            d = entry["defaults"]
+            self._img_set_controls(d["steps"], d["cfg"],
+                                   d["sampler"], d["size"])
+
+    def _img_set_controls(self, steps, cfg, sampler, size):
+        iw = self._imgw
+        for key, val in (("steps", steps), ("cfg", cfg)):
+            iw[key].delete(0, "end")
+            iw[key].insert(0, str(val))
+        self._img_sampler = sampler
+        iw["sampler_btn"].configure(
+            text=self._img_sampler_label())
+        self._img_size = size
+        iw["size_btn"].configure(text=size.replace("x", "×"))
+
+    def _img_size_popup(self):
+        self._img_popup(
+            self._imgw["size_btn"],
+            [(s.replace("x", "×"), s) for s in IMG_SIZES],
+            self._img_pick_size)
+
+    def _img_pick_size(self, size):
+        self._img_size = size
+        self._imgw["size_btn"].configure(
+            text=size.replace("x", "×"))
+
+    def _img_sampler_popup(self):
+        self._img_popup(self._imgw["sampler_btn"],
+                        [(label, key) for key, label
+                         in IMG_SAMPLERS],
+                        self._img_pick_sampler)
+
+    def _img_pick_sampler(self, key):
+        self._img_sampler = key
+        self._imgw["sampler_btn"].configure(
+            text=self._img_sampler_label())
+
+    def _img_refresh_models(self):
+        iw = self._imgw
+        entries = image_model_entries(self.store.settings)
+        paths = [e["path"] for e in entries]
+        if self.img_model_path not in paths:
+            base = os.path.join(IMG_MODELS_DIR,
+                                IMG_BASELINE_FILE)
+            self.img_model_path = base if base in paths else (
+                paths[0] if paths else None)
+        if self.img_model_path:
+            iw["model_btn"].configure(text=img_pretty_name(
+                os.path.basename(self.img_model_path)))
+        else:
+            iw["model_btn"].configure(text="No models")
+        cli = sd_cli_path()
+        if cli:
+            iw["engine"].configure(
+                text="Engine: sd-cli ✓ (%s)"
+                     % (sd_backend() or "custom"))
+        else:
+            iw["engine"].configure(
+                text="Engine: not installed - run setup")
+
+    def _img_save_ui(self, seed=None):
+        iw = self._imgw
+        self.store.settings["img_ui"] = {
+            "size": self._img_size, "sampler": self._img_sampler,
+            "steps": iw["steps"].get().strip(),
+            "cfg": iw["cfg"].get().strip(),
+            "seed": (str(seed) if seed is not None
+                     else iw["seed"].get().strip()),
+            "negative": iw["negative"].get(),
+            "model": self.img_model_path}
+        self.store.save_settings()
+
+    def _img_generate_or_cancel(self):
+        if self._img_job is not None:
+            job = self._img_job
+            job["cancelled"] = True
+            proc = job.get("proc")
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            self._imgw["status"].configure(text="Cancelling…")
+            return
+        iw = self._imgw
+        prompt = iw["prompt"].get("1.0", "end").strip()
+        if not prompt:
+            iw["status"].configure(text="Write a prompt first.")
+            return
+        if not sd_cli_path():
+            iw["status"].configure(
+                text="The image engine is not installed - run "
+                     "setup and it will be added.")
+            return
+        if not self.img_model_path or not os.path.isfile(
+                self.img_model_path):
+            iw["status"].configure(
+                text="No image model picked - download the "
+                     "baseline in Image models… first.")
+            return
+        try:
+            steps = max(1, min(150,
+                               int(iw["steps"].get().strip())))
+        except ValueError:
+            steps = 20
+        try:
+            cfg = max(0.0, min(30.0,
+                               float(iw["cfg"].get().strip())))
+        except ValueError:
+            cfg = 7.0
+        seed_txt = iw["seed"].get().strip()
+        try:
+            seed = int(seed_txt)
+            if seed < 0:
+                raise ValueError
+        except ValueError:
+            seed = random.randint(0, 2 ** 31 - 1)
+        os.makedirs(IMG_DIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        out = os.path.join(IMG_DIR, "img-%s.png" % stamp)
+        n = 1
+        while os.path.exists(out):
+            n += 1
+            out = os.path.join(IMG_DIR,
+                               "img-%s-%d.png" % (stamp, n))
+        job = {"model_path": self.img_model_path,
+               "prompt": prompt,
+               "negative": iw["negative"].get().strip(),
+               "steps": steps, "cfg": cfg, "size": self._img_size,
+               "seed": seed, "sampler": self._img_sampler,
+               "out": out, "proc": None, "cancelled": False,
+               "started": time.time()}
+        self._img_job = job
+        self._img_save_ui(seed=seed)
+        iw["gen_btn"].configure(text="Cancel")
+        iw["status"].configure(text="Loading the model…")
+        iw["log"].configure(text="")
+        self._img_bar(0)
+
+        def emit(kind, payload):
+            if kind == "done":
+                self.events.put(("img_done", (job, payload)))
+            else:
+                self.events.put(("img_" + kind, payload))
+
+        threading.Thread(target=run_sd_image, args=(job, emit),
+                         daemon=True).start()
+
+    def _img_bar(self, frac):
+        bar = self._imgw["bar"]
+        w = max(bar.winfo_width(), 1)
+        bar.delete("fill")
+        if frac > 0:
+            bar.create_rectangle(0, 0, int(w * min(frac, 1.0)),
+                                 8, fill=GREEN, outline="",
+                                 tags="fill")
+
+    def _img_finish(self, job, rc):
+        iw = self._imgw
+        self._img_job = None
+        iw["gen_btn"].configure(text="Generate")
+        if job.get("cancelled"):
+            if os.path.isfile(job["out"]):
+                try:
+                    os.remove(job["out"])
+                except OSError:
+                    pass
+            iw["status"].configure(text="Cancelled.")
+            self._img_bar(0)
+            return
+        if rc != 0 or not os.path.isfile(job["out"]):
+            iw["status"].configure(
+                text="The engine stopped (code %s) - its last "
+                     "line is below." % rc)
+            self._img_bar(0)
+            return
+        rec = {"file": os.path.basename(job["out"]),
+               "prompt": job["prompt"],
+               "negative": job["negative"],
+               "model": img_pretty_name(
+                   os.path.basename(job["model_path"])),
+               "model_file": os.path.basename(job["model_path"]),
+               "model_path": job["model_path"],
+               "size": job["size"], "steps": job["steps"],
+               "cfg": job["cfg"], "seed": job["seed"],
+               "sampler": job["sampler"],
+               "created": time.time()}
+        try:
+            with open(os.path.join(
+                    IMG_DIR, rec["file"] + ".json"), "w") as f:
+                json.dump(rec, f)
+        except OSError:
+            pass
+        self._img_current = rec
+        self._img_history_refresh(select=rec["file"])
+        self._img_show(job["out"])
+        took = int(time.time() - job["started"])
+        iw["status"].configure(
+            text="Done in %dm %02ds - seed %d. Saved to the "
+                 "images folder." % (took // 60, took % 60,
+                                     job["seed"]))
+        self._img_bar(1.0)
+
+    def _img_show(self, path):
+        iw = self._imgw
+        try:
+            img = self.tk.PhotoImage(file=path)
+        except Exception as e:
+            iw["status"].configure(
+                text="Cannot display that image: %s" % e)
+            return
+        factor = 1
+        while img.width() // factor > 900 or \
+                img.height() // factor > 520:
+            factor += 1
+        if factor > 1:
+            img = img.subsample(factor)
+        self._img_photo = img
+        iw["view"].configure(image=img, text="")
+
+    def _img_history_refresh(self, select=None):
+        records = list_generations()
+        self._img_records = records
+        self.img_list.delete(0, "end")
+        for i, r in enumerate(records):
+            when = time.strftime("%b %d %H:%M",
+                                 time.localtime(r["created"]))
+            snippet = (r.get("prompt") or "").replace(
+                "\n", " ")[:26]
+            self.img_list.insert("end", "%s  %s" % (when,
+                                                    snippet))
+            if select and r["file"] == select:
+                self.img_list.selection_set(i)
+                self.img_list.see(i)
+
+    def _img_sidebar_pick(self, _e=None):
+        sel = self.img_list.curselection()
+        if not sel:
+            return
+        rec = self._img_records[sel[0]]
+        self._img_current = rec
+        iw = self._imgw
+        iw["prompt"].delete("1.0", "end")
+        iw["prompt"].insert("1.0", rec.get("prompt", ""))
+        iw["negative"].delete(0, "end")
+        iw["negative"].insert(0, rec.get("negative", ""))
+        iw["seed"].delete(0, "end")
+        iw["seed"].insert(0, str(rec.get("seed", "")))
+        self._img_set_controls(rec.get("steps", 20),
+                               rec.get("cfg", 7.0),
+                               rec.get("sampler", "euler_a"),
+                               rec.get("size", "512x512"))
+        if rec.get("model_path") and os.path.isfile(
+                rec["model_path"]):
+            self.img_model_path = rec["model_path"]
+            iw["model_btn"].configure(text=rec.get(
+                "model", img_pretty_name(rec["model_file"])))
+        self._img_show(os.path.join(IMG_DIR, rec["file"]))
+        iw["status"].configure(
+            text="%s - %s, %d steps, CFG %s, seed %s"
+                 % (rec.get("model", ""), rec.get("size", ""),
+                    rec.get("steps", 0), rec.get("cfg", ""),
+                    rec.get("seed", "")))
+
+    def _img_new(self):
+        iw = self._imgw
+        iw["prompt"].delete("1.0", "end")
+        iw["seed"].delete(0, "end")
+        iw["status"].configure(text="")
+        iw["log"].configure(text="")
+        self._img_bar(0)
+        self._img_current = None
+        self._img_photo = None
+        iw["view"].configure(
+            image="", text="Write a prompt below and press "
+                           "Generate.\nPast images live in "
+                           "the list on the left.")
+        self.img_list.selection_clear(0, "end")
+
+    def _img_delete(self):
+        sel = self.img_list.curselection()
+        if not sel:
+            return
+        rec = self._img_records[sel[0]]
+        if not getattr(self, "_img_del_armed", False):
+            self._img_del_armed = True
+            self.img_del_btn.configure(text="Sure?")
+            self.root.after(2500, self._img_del_disarm)
+            return
+        self._img_del_disarm()
+        for suffix in ("", ".json"):
+            p = os.path.join(IMG_DIR, rec["file"] + suffix)
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        if self._img_current and \
+                self._img_current["file"] == rec["file"]:
+            self._img_new()
+        self._img_history_refresh()
+
+    def _img_del_disarm(self):
+        self._img_del_armed = False
+        try:
+            self.img_del_btn.configure(text="Delete image")
+        except Exception:
+            pass
+
+    # ---- file downloads (image models) --------------------------------
+    # Plain HTTPS downloads for image model files - the
+    # chat models come through Ollama, these are just files.
+    # One at a time, app-level like pulls: closing the
+    # Model Manager does not stop one, and the manager polls
+    # this dict to draw progress.
+    def _start_fdownload(self, tag, url, dest, sha256=None):
+        if self._fdl:
+            return False
+        st = {"tag": tag, "url": url, "dest": dest, "got": 0,
+              "total": 0, "done": False, "error": None,
+              "cancel": False, "sha256": sha256}
+        self._fdl = st
+
+        def work():
+            part = dest + ".part"
+            try:
+                os.makedirs(os.path.dirname(dest),
+                            exist_ok=True)
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "NexusGate"})
+                with urllib.request.urlopen(req,
+                                            timeout=60) as r:
+                    st["total"] = int(
+                        r.headers.get("Content-Length") or 0)
+                    h = hashlib.sha256() if sha256 else None
+                    with open(part, "wb") as f:
+                        while True:
+                            if st["cancel"]:
+                                raise _DownloadCancelled()
+                            chunk = r.read(262144)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            st["got"] += len(chunk)
+                            if h:
+                                h.update(chunk)
+                if h and h.hexdigest() != sha256:
+                    os.remove(part)
+                    st["error"] = ("the checksum did not "
+                                   "match the publisher's "
+                                   "hash - file discarded")
+                else:
+                    os.replace(part, dest)
+            except _DownloadCancelled:
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+                st["error"] = "cancelled"
+            except Exception as e:
+                st["error"] = str(e)
+            st["done"] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
     # ---- rendering ---------------------------------------------------
     def _render_message(self, role, content, thinking="",
                         sources=None):
@@ -3638,6 +4488,17 @@ class App:
                         self._begin_stream(model, messages)
                 elif kind == "version":
                     self._on_version(text)
+                elif kind == "img_log":
+                    self._imgw["log"].configure(text=text[:150])
+                elif kind == "img_step":
+                    a, b = text
+                    self._img_bar(a / b if b else 0)
+                    self._imgw["status"].configure(
+                        text="Step %d of %d…" % (a, b))
+                elif kind == "img_done":
+                    job, rc = text
+                    if job is self._img_job:
+                        self._img_finish(job, rc)
                 elif kind == "pull_done":
                     self._pull = None
                     if self._mdl is not None:
@@ -4055,6 +4916,77 @@ class App:
             btn.set_enabled(False)
             mdl["rows"][tag] = row
 
+        tk.Label(flow, text="IMAGE MODELS", bg=BG,
+                 fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=6,
+                                              pady=(16, 4))
+        mdl["img_engine"] = tk.Label(flow, text="", bg=BG,
+                                     fg=GREEN_DIM, font=(FONT, 9),
+                                     justify="left",
+                                     wraplength=500)
+        mdl["img_engine"].pack(anchor="w", padx=6)
+        tk.Label(flow, text="Image generation runs on sd-cli "
+                            "(stable-diffusion.cpp): one small "
+                            "program, no ComfyUI, no Python "
+                            "stack. The baseline is required; "
+                            "the rest are optional downloads "
+                            "into the app's own folder.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=500).pack(anchor="w", padx=6,
+                                      pady=(2, 0))
+        mdl["img_rows_frame"] = tk.Frame(flow, bg=BG)
+        mdl["img_rows_frame"].pack(fill="x")
+
+        tk.Label(flow, text="IMAGE SEARCH (HUGGING FACE)",
+                 bg=BG, fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=6,
+                                              pady=(12, 4))
+        tk.Label(flow, text="Search Hugging Face for "
+                            "text-to-image models and download "
+                            "a single-file checkpoint "
+                            "(.safetensors / .ckpt / .gguf) "
+                            "from the repo's top level.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=500).pack(anchor="w", padx=6)
+        isbar = tk.Frame(flow, bg=BG)
+        isbar.pack(fill="x", padx=4, pady=(4, 0))
+        iswrap = BubbleFrame(isbar, fill=PANEL2,
+                             outline=BORDER, radius=11, bg=BG)
+        iswrap.pack(side="left", fill="x", expand=True)
+        mdl["ihf_entry"] = tk.Entry(iswrap, bg=PANEL2,
+                                    fg=GREEN,
+                                    insertbackground=ORANGE,
+                                    bd=0, highlightthickness=0,
+                                    font=(FONT, 10))
+        mdl["ihf_entry"].pack(fill="x", padx=10, pady=6)
+        mdl["ihf_entry"].bind("<Return>",
+                              lambda e: self._ihf_go(mdl))
+        mdl["ihf_btn"] = RoundedButton(
+            isbar, text="Search", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._ihf_go(mdl))
+        mdl["ihf_btn"].pack(side="right", padx=(8, 0))
+        mdl["ihf_frame"] = tk.Frame(flow, bg=BG)
+        mdl["ihf_frame"].pack(fill="x")
+
+        tk.Label(flow, text="IMAGE MODEL FOLDERS", bg=BG,
+                 fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=6,
+                                              pady=(12, 4))
+        tk.Label(flow, text="Folders scanned for image "
+                            "checkpoints (.safetensors / "
+                            ".ckpt), used in place where they "
+                            "already live - a ComfyUI "
+                            "checkpoints folder works here as "
+                            "a plain folder of files.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=500).pack(anchor="w", padx=6)
+        mdl["img_loc_frame"] = tk.Frame(flow, bg=BG)
+        mdl["img_loc_frame"].pack(fill="x")
+
         bind_wheel(canvas)
         bind_wheel(flow)
 
@@ -4066,6 +4998,7 @@ class App:
         win.protocol("WM_DELETE_WINDOW",
                      lambda: self._mdl_close(mdl))
         self._loc_render(mdl)
+        self._imgmdl_render(mdl)
         self._mdl_refresh(mdl)
         self._mdl_drain(mdl)
 
@@ -4458,6 +5391,345 @@ class App:
         if names is not None:
             self.events.put(("models", names))
         mdl["queue"].put(("loc_removed", tag))
+
+    # ---- image models in the manager ------------------------------
+    def _imgmdl_render(self, mdl):
+        tk = self.tk
+        cli = sd_cli_path()
+        base_path = os.path.join(IMG_MODELS_DIR,
+                                 IMG_BASELINE_FILE)
+        if cli:
+            mdl["img_engine"].configure(
+                text="Image engine: sd-cli ✓ (%s build). "
+                     "Baseline model: %s."
+                     % (sd_backend() or "custom",
+                        "installed" if os.path.isfile(base_path)
+                        else "NOT downloaded yet"))
+        else:
+            mdl["img_engine"].configure(
+                text="Image engine: NOT installed - run setup "
+                     "and it will be added, matched to this "
+                     "machine's GPU.")
+        frame = mdl["img_rows_frame"]
+        for child in frame.winfo_children():
+            child.destroy()
+        mdl["img_rows"] = {}
+        for entry in [IMG_BASELINE] + IMAGE_MODELS:
+            required = entry is IMG_BASELINE
+            path = os.path.join(IMG_MODELS_DIR, entry["file"])
+            present = os.path.isfile(path)
+            rowf = BubbleFrame(frame, fill=PANEL,
+                               outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            row = {"file": entry["file"], "entry": entry,
+                   "present": present, "armed": False}
+            btn = RoundedButton(
+                rowf, text="Download", kind="ghost",
+                font=(FONT, 10, "bold"), bg=PANEL,
+                command=lambda r=row: self._imgmdl_click(mdl,
+                                                         r))
+            btn.pack(side="right", padx=10, pady=10)
+            status = tk.Label(rowf, text="", bg=PANEL,
+                              fg=ORANGE_DIM, font=(FONT, 8))
+            status.pack(side="right", padx=(0, 2))
+            tk.Label(rowf, text=entry["name"], bg=PANEL,
+                     fg=GREEN,
+                     font=(FONT, 11, "bold")).pack(anchor="w",
+                                                   padx=12,
+                                                   pady=(8, 0))
+            meta = "%s - %s" % (entry["family"], entry["size"])
+            if required:
+                meta += " - REQUIRED"
+            if entry.get("pc_only"):
+                meta += " - PC-CLASS"
+            if present:
+                meta += " - %s on disk" % fmt_bytes(
+                    os.path.getsize(path))
+            tk.Label(rowf, text=meta, bg=PANEL, fg=GREEN_DIM,
+                     font=(MONO, 8), anchor="w").pack(
+                         anchor="w", padx=12, fill="x")
+            tk.Label(rowf, text=entry["blurb"], bg=PANEL,
+                     fg=GREEN_DIM, font=(FONT, 9),
+                     justify="left",
+                     wraplength=320).pack(anchor="w", padx=12,
+                                          pady=(0, 8))
+            row["btn"] = btn
+            row["status"] = status
+            if present and required:
+                btn.configure(text="Installed")
+                btn.set_enabled(False)
+            elif present:
+                btn.configure(text="Delete")
+            mdl["img_rows"][entry["file"]] = row
+            mdl["bind_wheel"](rowf)
+        self._imgloc_render(mdl)
+        self._imgmdl_poll(mdl)
+
+    def _imgmdl_click(self, mdl, row):
+        entry = row["entry"]
+        path = os.path.join(IMG_MODELS_DIR, entry["file"])
+        if self._fdl and self._fdl["dest"] == path:
+            self._fdl["cancel"] = True
+            return
+        if row["present"]:
+            if entry is IMG_BASELINE:
+                return
+            if not row["armed"]:
+                row["armed"] = True
+                row["btn"].configure(text="Sure?")
+                self.root.after(
+                    2500,
+                    lambda r=row: (r.update(armed=False),
+                                   self._imgmdl_render(mdl)
+                                   if self._mdl is mdl
+                                   else None))
+                return
+            try:
+                os.remove(path)
+            except OSError as e:
+                mdl["note"].configure(
+                    text="Could not delete %s: %s"
+                         % (entry["file"], e))
+                return
+            self._imgmdl_render(mdl)
+            self._img_refresh_models()
+            return
+        if self._fdl:
+            mdl["note"].configure(
+                text="Another download is already running - "
+                     "one at a time.")
+            return
+        self._start_fdownload(entry["file"], entry["url"],
+                              path, sha256=entry.get("sha256"))
+        self._imgmdl_render(mdl)
+
+    def _imgmdl_poll(self, mdl):
+        fdl = self._fdl
+        if fdl and not fdl["done"]:
+            row = (mdl.get("img_rows") or {}).get(fdl["tag"])
+            if fdl["total"]:
+                txt = "Downloading %s - %d%%" % (
+                    fdl["tag"],
+                    int(100 * fdl["got"] / fdl["total"]))
+            else:
+                txt = "Downloading %s - %s" % (
+                    fdl["tag"], fmt_bytes(fdl["got"]))
+            if row:
+                row["btn"].configure(text="Cancel")
+                row["status"].configure(text=txt)
+            else:
+                mdl["note"].configure(text=txt + "…")
+            return
+        if fdl and fdl["done"]:
+            tag, err = fdl["tag"], fdl["error"]
+            self._fdl = None
+            if err == "cancelled":
+                mdl["note"].configure(
+                    text="Download of %s cancelled." % tag)
+            elif err:
+                mdl["note"].configure(
+                    text="Download of %s failed: %s"
+                         % (tag, err))
+            else:
+                mdl["note"].configure(
+                    text="%s downloaded." % tag)
+            self._imgmdl_render(mdl)
+            self._img_refresh_models()
+            if mdl.get("ihf_results") is not None:
+                self._ihf_render(mdl, mdl["ihf_results"])
+
+    # ---- image search (Hugging Face) ------------------------------
+    def _ihf_go(self, mdl):
+        query = mdl["ihf_entry"].get().strip()
+        if not query:
+            mdl["note"].configure(
+                text="Type a name or a word to search "
+                     "Hugging Face for image models.")
+            return
+        mdl["ihf_btn"].set_enabled(False)
+        mdl["note"].configure(
+            text="Searching Hugging Face for image models...")
+        threading.Thread(target=self._ihf_search,
+                         args=(mdl, query), daemon=True).start()
+
+    def _ihf_search(self, mdl, query):
+        try:
+            qs = urllib.parse.urlencode(
+                {"search": query,
+                 "pipeline_tag": "text-to-image",
+                 "sort": "downloads", "direction": "-1",
+                 "limit": "20"})
+            req = urllib.request.Request(
+                HF_API + "/api/models?" + qs,
+                headers={"User-Agent": "NexusGate"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                repos = json.loads(r.read().decode("utf-8"))
+
+            def files_of(repo):
+                rid = repo.get("id", "")
+                try:
+                    u = (HF_API + "/api/models/"
+                         + urllib.parse.quote(rid, safe="/")
+                         + "/tree/main")
+                    rq = urllib.request.Request(
+                        u, headers={"User-Agent": "NexusGate"})
+                    with urllib.request.urlopen(rq,
+                                                timeout=30) as r:
+                        files = json.loads(
+                            r.read().decode("utf-8"))
+                    return [{"repo": rid, "file": f["path"],
+                             "size": f.get("size", 0),
+                             "downloads": repo.get(
+                                 "downloads", 0)}
+                            for f in files
+                            if f.get("type") == "file"
+                            and "/" not in f.get("path", "")
+                            and os.path.splitext(
+                                f["path"])[1].lower()
+                            in IMG_EXTS]
+                except Exception:
+                    return []
+
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                nested = list(pool.map(files_of, repos))
+            results = [x for sub in nested for x in sub]
+            mdl["queue"].put(("ihf_results", results))
+        except Exception as e:
+            mdl["queue"].put(("ihf_error", str(e)))
+
+    def _ihf_dest(self, item):
+        return os.path.join(
+            IMG_MODELS_DIR,
+            item["repo"].replace("/", "_") + "__"
+            + item["file"])
+
+    def _ihf_render(self, mdl, results):
+        tk = self.tk
+        mdl["ihf_results"] = results
+        mdl["ihf_btn"].set_enabled(True)
+        frame = mdl["ihf_frame"]
+        for child in frame.winfo_children():
+            child.destroy()
+        if not results:
+            tk.Label(frame, text="No single-file checkpoints "
+                                 "found at the top level of "
+                                 "those repos.",
+                     bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
+                         anchor="w", padx=6)
+            return
+        for item in results[:24]:
+            dest = self._ihf_dest(item)
+            present = os.path.isfile(dest)
+            rowf = BubbleFrame(frame, fill=PANEL,
+                               outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            btn = RoundedButton(
+                rowf,
+                text="On this machine" if present
+                     else "Download",
+                kind="ghost", font=(FONT, 10, "bold"),
+                bg=PANEL,
+                command=lambda it=item: self._ihf_download(
+                    mdl, it))
+            btn.pack(side="right", padx=10, pady=10)
+            if present:
+                btn.set_enabled(False)
+            tk.Label(rowf, text=item["file"], bg=PANEL,
+                     fg=GREEN,
+                     font=(FONT, 10, "bold")).pack(anchor="w",
+                                                   padx=12,
+                                                   pady=(8, 0))
+            tk.Label(rowf,
+                     text="%s - %s" % (
+                         item["repo"],
+                         fmt_bytes(item["size"])),
+                     bg=PANEL, fg=GREEN_DIM, font=(MONO, 8),
+                     anchor="w").pack(anchor="w", padx=12,
+                                      pady=(0, 8), fill="x")
+            mdl["bind_wheel"](rowf)
+
+    def _ihf_download(self, mdl, item):
+        dest = self._ihf_dest(item)
+        if os.path.isfile(dest):
+            return
+        if self._fdl:
+            mdl["note"].configure(
+                text="Another download is already running - "
+                     "one at a time.")
+            return
+        url = (HF_API + "/"
+               + urllib.parse.quote(item["repo"], safe="/")
+               + "/resolve/main/"
+               + urllib.parse.quote(item["file"]))
+        self._start_fdownload(os.path.basename(dest), url, dest)
+        mdl["note"].configure(
+            text="Downloading %s..." % os.path.basename(dest))
+
+    # ---- image model folders ---------------------------------------
+    def _imgloc_render(self, mdl):
+        tk = self.tk
+        dirs = self.store.settings.get("img_dirs") or []
+        frame = mdl["img_loc_frame"]
+        for child in frame.winfo_children():
+            child.destroy()
+        for d in dirs:
+            n = len(scan_image_dirs([d]))
+            rowf = BubbleFrame(frame, fill=PANEL,
+                               outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            RoundedButton(
+                rowf, text="Remove", kind="quiet",
+                font=(FONT, 9, "bold"), bg=PANEL,
+                command=lambda p=d: self._imgloc_remove(mdl, p)
+                ).pack(side="right", padx=8, pady=8)
+            tk.Label(rowf, text=d, bg=PANEL, fg=GREEN,
+                     font=(MONO, 9), justify="left",
+                     wraplength=400, anchor="w").pack(
+                         anchor="w", padx=12, pady=(8, 0),
+                         fill="x")
+            tk.Label(rowf,
+                     text=("%d checkpoint(s) found here" % n)
+                     if n else "No checkpoints found here",
+                     bg=PANEL, fg=GREEN_DIM,
+                     font=(FONT, 8)).pack(anchor="w", padx=12,
+                                          pady=(0, 8))
+            mdl["bind_wheel"](rowf)
+        addf = tk.Frame(frame, bg=BG)
+        addf.pack(fill="x", padx=4, pady=(2, 0))
+        RoundedButton(
+            addf, text="Add folder...", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._imgloc_add(mdl)).pack(
+                side="left")
+
+    def _imgloc_add(self, mdl):
+        from tkinter import filedialog
+        path = filedialog.askdirectory(
+            parent=mdl["win"],
+            title="Folder with image checkpoints")
+        if not path:
+            return
+        path = os.path.normpath(path)
+        dirs = self.store.settings.get("img_dirs") or []
+        if path not in dirs:
+            dirs.append(path)
+            self.store.settings["img_dirs"] = dirs
+            self.store.save_settings()
+        self._imgloc_render(mdl)
+        self._img_refresh_models()
+
+    def _imgloc_remove(self, mdl, path):
+        dirs = self.store.settings.get("img_dirs") or []
+        if path in dirs:
+            dirs.remove(path)
+            self.store.settings["img_dirs"] = dirs
+            self.store.save_settings()
+        self._imgloc_render(mdl)
+        self._img_refresh_models()
 
     # ---- Hugging Face search ----------------------------------
     # GGUF repos from Hugging Face's public API (no account, no
@@ -4895,6 +6167,12 @@ class App:
                     self._mdl_refresh(mdl)
                 elif kind == "hf_results":
                     self._hf_render(mdl, payload)
+                elif kind == "ihf_results":
+                    self._ihf_render(mdl, payload)
+                elif kind == "ihf_error":
+                    mdl["ihf_btn"].set_enabled(True)
+                    mdl["note"].configure(
+                        text="Image search failed: " + payload)
                 elif kind == "hf_error":
                     mdl["hf_btn"].set_enabled(True)
                     mdl["note"].configure(
@@ -4940,6 +6218,7 @@ class App:
             pass
         self._mdl_sync_pull(mdl)
         self._mdl_render_download(mdl)
+        self._imgmdl_poll(mdl)
         mdl["drain_id"] = self.root.after(90,
                                           lambda: self._mdl_drain(mdl))
 

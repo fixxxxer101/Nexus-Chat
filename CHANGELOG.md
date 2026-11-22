@@ -5,6 +5,30 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.27.0 — 2026-11-21
+Image generation: a Chat / Image switch at the top of
+the sidebar. The Image studio generates pictures with
+sd-cli (stable-diffusion.cpp) - a standalone engine,
+no ComfyUI, no Python stack, so it works on any
+machine. Setup installs the build that matches the
+machine: CUDA for NVIDIA, Vulkan for AMD/Intel, CPU
+as the fallback on Windows; built from source on
+Linux. DreamShaper 8 (SD 1.5) is a REQUIRED model,
+downloaded by setup and verified against the
+publisher's SHA256 hash. The studio has prompt and
+negative prompt, size / steps / CFG / sampler / seed
+(with the used seed recorded), live step progress
+with the engine's own log line visible, Cancel, and
+a history of generations - each saved with its full
+settings, and picking one reloads them all. The
+Model Manager gains an Image models section: the
+baseline and an optional catalog (DreamShaper 8 LCM
+for speed, DreamShaper XL Turbo and SDXL Base for
+PCs), Hugging Face search for single-file image
+checkpoints, and image model folders whose
+checkpoints are used in place - a ComfyUI folder
+works as a plain folder of files.
+
 ## 1.26.0 — 2026-11-21
 Renamed: Nexus Chat is now Nexus Gate, matching the
 renamed GitHub repository. The header, window

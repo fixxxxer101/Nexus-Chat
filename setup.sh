@@ -37,7 +37,7 @@ api_up() { curl -sf "$API" >/dev/null 2>&1; }
 # underneath it. Best effort only - offline, a diverged tree, or a
 # non-git copy all just continue with the code that's here.
 # NEXUS_SETUP_UPDATED stops the re-exec from looping.
-say "Step 0/4: code"
+say "Step 0/5: code"
 if [ "${NEXUS_SETUP_UPDATED:-}" = "1" ]; then
   skip "code already updated this run"
 elif [ -d "$SRC/.git" ]; then
@@ -52,7 +52,7 @@ else
 fi
 
 # ---- 1. Ollama ------------------------------------------------------
-say "Step 1/4: Ollama"
+say "Step 1/5: Ollama"
 if command -v ollama >/dev/null 2>&1; then
   skip "Ollama already installed ($(command -v ollama))"
 else
@@ -63,7 +63,7 @@ else
 fi
 
 # ---- 2. API answering ------------------------------------------------
-say "Step 2/4: Ollama service"
+say "Step 2/5: Ollama service"
 if api_up; then
   skip "API already answering at 127.0.0.1:11434"
 else
@@ -80,7 +80,7 @@ else
 fi
 
 # ---- 3. Models --------------------------------------------------------
-say "Step 3/4: models"
+say "Step 3/5: models"
 have=$(ollama list 2>/dev/null | awk 'NR>1 {print $1}')
 for m in $MODELS; do
   if printf '%s\n' "$have" | grep -qx "$m"; then
@@ -93,11 +93,53 @@ for m in $MODELS; do
 done
 
 # ---- 4. The app --------------------------------------------------------
-say "Step 4/4: Nexus Gate app"
+say "Step 4/5: Nexus Gate app"
 bash "$SRC/install.sh" || die "install.sh failed - scroll up for its error"
+
+# ---- 5. Image engine + baseline model ----------------------------------
+say "Step 5/5: image engine + baseline model"
+DATA_DIR="$HOME/.local/share/nexus-chat"
+SD_DIR="$DATA_DIR/sd"
+if [ -x "$SD_DIR/sd-cli" ]; then
+  skip "image engine already built"
+else
+  need_pkgs=""
+  command -v cmake >/dev/null 2>&1 || need_pkgs="$need_pkgs cmake"
+  command -v g++ >/dev/null 2>&1 || need_pkgs="$need_pkgs build-essential"
+  command -v git >/dev/null 2>&1 || need_pkgs="$need_pkgs git"
+  if [ -n "$need_pkgs" ]; then
+    echo "[setup] installing build tools:$need_pkgs"
+    sudo apt-get update -qq && sudo apt-get install -y $need_pkgs || die "installing build tools failed"
+  fi
+  BUILD_DIR="$DATA_DIR/sd-build"
+  rm -rf "$BUILD_DIR"
+  git clone --depth 1 --branch master-1106-532d2c1 https://github.com/leejet/stable-diffusion.cpp "$BUILD_DIR" || die "cloning stable-diffusion.cpp failed"
+  (cd "$BUILD_DIR" && git submodule update --init --recursive) || die "fetching the sd.cpp submodules failed"
+  echo "[setup] building sd-cli from source (one time; several minutes on a Pi) ..."
+  (cd "$BUILD_DIR" && cmake -B build -DCMAKE_BUILD_TYPE=Release >/dev/null && (cmake --build build -j"$(nproc)" --target sd-cli || cmake --build build -j"$(nproc)")) || die "building sd-cli failed"
+  mkdir -p "$SD_DIR"
+  cp "$BUILD_DIR/build/bin/sd-cli" "$SD_DIR/sd-cli"
+  printf 'source' > "$SD_DIR/backend.txt"
+  rm -rf "$BUILD_DIR"
+  done_ "image engine built from source"
+fi
+IMG_MODELS_DIR="$DATA_DIR/image-models"
+BASE="$IMG_MODELS_DIR/DreamShaper8_pruned.safetensors"
+mkdir -p "$IMG_MODELS_DIR"
+if [ -f "$BASE" ] && [ "$(stat -c%s "$BASE")" -gt 2000000000 ]; then
+  skip "baseline image model already downloaded"
+else
+  echo "[setup] downloading the DreamShaper 8 baseline image model (~2.1 GB) ..."
+  curl -L --fail -o "$BASE.part" "https://civitai.com/api/download/models/128713" || die "baseline image model download failed - re-run setup to retry"
+  echo "879db523c30d3b9017143d56705015e15a2cb5628762c11d086fed9538abd7fd  $BASE.part" | sha256sum -c - >/dev/null || die "baseline image model checksum mismatch - the download was discarded; re-run setup"
+  mv "$BASE.part" "$BASE"
+  done_ "baseline image model installed (checksum verified)"
+fi
 
 # ---- verify -------------------------------------------------------------
 say "Verifying"
+[ -x "$SD_DIR/sd-cli" ] || die "image engine missing at final check"
+[ -f "$BASE" ] || die "baseline image model missing at final check"
 api_up || die "API check failed at the end - something is off"
 final=$(ollama list 2>/dev/null | awk 'NR>1 {print $1}')
 for m in $MODELS; do

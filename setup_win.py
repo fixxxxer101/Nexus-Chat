@@ -10,6 +10,10 @@ Does everything, skipping whatever is already done:
   4. the app installed to %LOCALAPPDATA%\\NexusChat with its icon,
      a Desktop shortcut, and the checkout path recorded so the
      app's Update button can find this checkout later
+  5. the image engine (sd-cli from stable-diffusion.cpp): the
+     GPU is detected and the matching build installed - CUDA
+     for NVIDIA, Vulkan for AMD/Intel, CPU as the fallback -
+     plus the required baseline image model, checksum-verified
 
 --app-only skips steps 1-3 (what install.bat runs).
 Exit codes: 0 done, 2 Ollama installer launched (action needed),
@@ -23,6 +27,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_HOME = os.path.join(os.environ.get("LOCALAPPDATA")
@@ -221,6 +226,145 @@ def install_app():
     return True
 
 
+SD_RELEASE = "master-1106-532d2c1"
+SD_ZIPS = {
+    "cuda": ["sd-master-532d2c1-bin-win-cuda12-x64.zip",
+             "cudart-sd-bin-win-cu12-x64.zip"],
+    "vulkan": ["sd-master-532d2c1-bin-win-vulkan-x64.zip"],
+    "cpu": ["sd-master-532d2c1-bin-win-cpu-x64.zip"],
+}
+IMG_BASELINE_FILE = "DreamShaper8_pruned.safetensors"
+IMG_BASELINE_URL = "https://civitai.com/api/download/models/128713"
+IMG_BASELINE_SHA256 = \
+    "879db523c30d3b9017143d56705015e15a2cb5628762c11d086fed9538abd7fd"
+
+
+def download_file(url, dest, label):
+    say("Downloading %s..." % label)
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "NexusGate-Setup"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        total = int(r.headers.get("Content-Length") or 0)
+        got, last = 0, -1
+        with open(dest, "wb") as f:
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if total:
+                    pct = int(100 * got / total)
+                    if pct >= last + 10:
+                        last = pct
+                        say("  %s: %d%%" % (label, pct))
+    return dest
+
+
+def detect_gpu_backend():
+    """Pick the sd-cli build for this machine's GPU: CUDA for
+    NVIDIA, Vulkan for AMD/Intel, CPU when nothing is found."""
+    names = ""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_VideoController).Name "
+             "-join ' '"],
+            capture_output=True, text=True, timeout=30)
+        names = (r.stdout or "").lower()
+    except Exception:
+        pass
+    if "nvidia" in names:
+        return "cuda"
+    if "amd" in names or "radeon" in names or "intel" in names:
+        return "vulkan"
+    return "cpu"
+
+
+def install_image_engine():
+    sd_dir = os.path.join(DATA_DIR, "sd")
+    cli = os.path.join(sd_dir, "sd-cli.exe")
+    if os.path.isfile(cli):
+        say("Image engine already installed (%s)."
+            % (open(os.path.join(sd_dir, "backend.txt")).read()
+               .strip() if os.path.isfile(
+                   os.path.join(sd_dir, "backend.txt"))
+               else "unknown build"))
+    else:
+        backend = detect_gpu_backend()
+        say("Image engine: installing the %s build of sd-cli "
+            "(%s), matched to this machine's GPU..."
+            % (backend, SD_RELEASE))
+        tmp = os.path.join(DATA_DIR, "sd-download")
+        try:
+            os.makedirs(tmp, exist_ok=True)
+            for z in SD_ZIPS[backend]:
+                zp = os.path.join(tmp, z)
+                download_file(
+                    "https://github.com/leejet/"
+                    "stable-diffusion.cpp/releases/download/"
+                    "%s/%s" % (SD_RELEASE, z), zp, z)
+                with zipfile.ZipFile(zp) as zf:
+                    zf.extractall(tmp)
+            found = None
+            for root, _dirs, files in os.walk(tmp):
+                if "sd-cli.exe" in files:
+                    found = root
+                    break
+            if not found:
+                say("Image engine: sd-cli.exe was not in the "
+                    "download - image generation not "
+                    "installed; chat is unaffected.")
+                return
+            os.makedirs(sd_dir, exist_ok=True)
+            for fn in os.listdir(found):
+                srcp = os.path.join(found, fn)
+                if os.path.isfile(srcp):
+                    shutil.copyfile(
+                        srcp, os.path.join(sd_dir, fn))
+            with open(os.path.join(sd_dir, "backend.txt"),
+                      "w") as f:
+                f.write(backend)
+            say("Image engine installed (%s build)."
+                % backend)
+        except Exception as e:
+            say("Image engine install failed: %s - chat is "
+                "unaffected; re-run setup to retry." % e)
+            return
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    models_dir = os.path.join(DATA_DIR, "image-models")
+    dest = os.path.join(models_dir, IMG_BASELINE_FILE)
+    if os.path.isfile(dest) and \
+            os.path.getsize(dest) > 2_000_000_000:
+        say("Baseline image model already downloaded.")
+        return
+    os.makedirs(models_dir, exist_ok=True)
+    part = dest + ".part"
+    try:
+        download_file(IMG_BASELINE_URL, part,
+                      "DreamShaper 8, the baseline image "
+                      "model (~2.1 GB)")
+        h = hashlib.sha256()
+        with open(part, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != IMG_BASELINE_SHA256:
+            os.remove(part)
+            say("Baseline image model: the checksum did not "
+                "match the publisher's hash, so the download "
+                "was discarded. Re-run setup to retry.")
+            return
+        os.replace(part, dest)
+        say("Baseline image model installed, checksum "
+            "verified.")
+    except Exception as e:
+        say("Baseline image model download failed: %s - it "
+            "can also be downloaded inside the app (Model "
+            "Manager, Image models). Re-run setup to retry."
+            % e)
+
+
 def main():
     app_only = "--app-only" in sys.argv
     in_app = "--no-pause" in sys.argv
@@ -235,6 +379,7 @@ def main():
         if not pull_models(exe):
             return 1
     install_app()
+    install_image_engine()
     say("Done. Double-click the Nexus Gate icon on the desktop.")
     return 0
 
