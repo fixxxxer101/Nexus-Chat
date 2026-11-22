@@ -5,6 +5,12 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.18.1 — 2026-11-21
+The window opens in front: at startup it raises itself,
+takes focus, and holds topmost for a fraction of a second
+so the window manager honours the raise - then lets go and
+behaves like a normal window.
+
 ## 1.18.0 — 2026-11-21
 Three frame fixes in one: (1) the magenta outline is gone -
 a card's backing colour lives on its underlay canvas as

@@ -73,7 +73,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.18.0"
+VERSION = "1.18.1"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1243,7 +1243,30 @@ class App:
         self.refresh_sidebar()
         self.root.after(60, self._drain)
         self.root.after(300, self._check_ollama)
+        self.root.after(80, self._come_to_front)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _come_to_front(self):
+        # Open in front, not behind whatever else is running:
+        # raise the window, force focus, and hold it topmost
+        # just long enough for the window manager to honour
+        # the raise - then let go, so it behaves like any
+        # normal window afterwards.
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            self.root.attributes("-topmost", True)
+            self.root.after(400, self._drop_topmost)
+        except Exception:
+            pass
+
+    def _drop_topmost(self):
+        try:
+            if self.root.winfo_exists():
+                self.root.attributes("-topmost", False)
+        except Exception:
+            pass
 
     # ---- layout ------------------------------------------------------
     def _build_layout(self):
