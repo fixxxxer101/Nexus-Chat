@@ -5,6 +5,22 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.13.0 — 2026-11-21
+Three additions. (1) Hugging Face search in the Model
+Manager: search GGUF repos by name or keyword, get the top
+20 by downloads, pick a quant per result (Q4_K_M by
+default, every quant with its real size), and download -
+hf.co models use the same pull machinery, so background
+downloads, the header picker and Delete all apply.
+(2) A thinking level setting, per model, in the Menu: the
+levels offered are the ones the model supports - low /
+medium / high for gpt-oss (which has no off), off / on for
+Qwen3 and DeepSeek-R1, nothing for models that never
+think. (3) The header's separate Memory / System / Ollama
+/ Prompt buttons are now one Menu button holding all of
+them plus the Model Manager; the header keeps the title,
+the model picker and the status.
+
 ## 1.12.0 — 2026-11-21
 Model downloads now belong to the app, not the Model
 Manager window: close the manager mid-download and the

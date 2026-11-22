@@ -8,20 +8,24 @@ logs all live on this machine (Linux: ~/.local/share/nexus-chat/;
 Windows: %LOCALAPPDATA%\\NexusChat\\data).
 
 Features (Clint's spec, 2026-11-21):
-  - Thinking traces: when the model thinks (Qwen3), each reply's
-    reasoning is a collapsible block (click to expand/collapse),
-    saved in the chat log so old reasoning can be re-read. Models
-    that never think (e.g. qwen2.5) simply reply - pick per chat
-    from the model picker. (There is no thinking on/off toggle:
-    Qwen3 in no-think mode still narrated its reasoning inside the
-    answer, so the toggle could not be honest. Removed 2026-11-21
-    at Clint's direction.)
+  - Thinking traces with a per-model level setting (in the
+    header's Menu): each reply's reasoning is a collapsible
+    block (click to expand/collapse), saved in the chat log so
+    old reasoning can be re-read. The levels offered are the
+    ones the model actually supports: gpt-oss takes low /
+    medium / high (it cannot be switched off - Ollama has no
+    off for it), Qwen3 / DeepSeek-R1 take off / on, and models
+    that never think are never sent a think key. (History: a
+    plain on/off toggle shipped first and was removed the same
+    day - Qwen3 in no-think mode still narrated its reasoning
+    inside the answer, so a toggle promised what it could not
+    deliver. Levels replaced it once gpt-oss made them real.)
   - Glass box: the system prompt is visible and editable in the
-    app (System button), and the same window previews the EXACT
-    context the model receives for the open chat - nothing hidden.
-    System prompts can be saved as named presets (save / delete /
-    pick in the System window) and switched right in the header
-    from the Prompt picker, next to the model picker.
+    app (Menu > System prompt), and the same window previews
+    the EXACT context the model receives for the open chat -
+    nothing hidden. System prompts can be saved as named
+    presets (save / delete / pick in the System window) and
+    switched from the header's Menu, beside the model picker.
   - An Update button (sidebar) pulls the latest version from the
     git checkout and reinstalls, streaming setup's output into a
     window - no terminal needed. One codebase, both platforms:
@@ -53,6 +57,8 @@ import subprocess
 import sys
 import threading
 import time
+import re
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -64,7 +70,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.12.0"
+VERSION = "1.13.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -75,6 +81,7 @@ IS_WINDOWS = os.name == "nt"
 # exists on Windows, hence the getattr fallback.
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
+HF_API = os.environ.get("NEXUS_HF", "https://huggingface.co")
 if IS_WINDOWS:
     _app_home = os.path.join(
         os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
@@ -134,6 +141,40 @@ OPTIONAL_MODELS = [
     ("moondream:1.8b", "Moondream 1.8B", "Vision", "1.7 GB",
      "A tiny vision model, very light on RAM."),
 ]
+CAT_TAGS = {t for t, *_ in OPTIONAL_MODELS}
+
+# Hugging Face search (Model Manager): GGUF repos only. A repo
+# offers one file per quant; Ollama pulls a quant by tag -
+# hf.co/<user>/<repo>:<QUANT> - through the same /api/pull as
+# everything else.
+QUANT_TOKEN = re.compile(
+    r"(IQ\d+(?:\.\d+)?_[A-Z]+|Q\d+_[A-Z0-9]+(?:_[A-Z]+)?"
+    r"|BF16|F16|F32)")
+
+
+def hf_quants(files):
+    """Group a repo tree's GGUF files by quant: [(quant, total
+    bytes)] sorted by size. Split files sum into their quant;
+    mmproj add-ons are not quants. A file with no quant token
+    groups under "" (pulled with no tag)."""
+    by = {}
+    for f in files:
+        path = f.get("path", "")
+        if not path.endswith(".gguf") or "mmproj" in path.lower():
+            continue
+        found = QUANT_TOKEN.findall(path)
+        q = found[-1].upper() if found else ""
+        by[q] = by.get(q, 0) + (f.get("size") or 0)
+    return sorted(by.items(), key=lambda kv: kv[1])
+
+
+def hf_default_quant(quants):
+    """Index of the default quant: Q4_K_M when offered (the
+    balance point), else the middle of the size range."""
+    for i, (q, _) in enumerate(quants):
+        if q == "Q4_K_M":
+            return i
+    return len(quants) // 2
 NUM_CTX = 4096
 # context budget (rough tokens, chars/4): compress when the assembled
 # context passes COMPRESS_AT; always keep the last KEEP_RAW messages
@@ -242,9 +283,45 @@ def est_tokens(text):
     return (len(text) + 3) // 4
 
 
-def supports_thinking(model):
+def think_levels(model):
+    """The thinking levels a model supports, low to high.
+    gpt-oss takes real effort levels and cannot be switched
+    off; the Qwen3 / DeepSeek-R1 families take off / on;
+    anything else never thinks. Matched by substring so
+    Hugging Face names (hf.co/unsloth/Qwen3-...-GGUF) count."""
     m = (model or "").lower()
-    return m.startswith("qwen3") or m.startswith("deepseek-r1")
+    if "gpt-oss" in m:
+        return ["low", "medium", "high"]
+    if "qwen3" in m or "deepseek-r1" in m:
+        return ["off", "on"]
+    return []
+
+
+def supports_thinking(model):
+    return bool(think_levels(model))
+
+
+def think_wire(model, level):
+    """The /api/chat think value for a chosen level: False for
+    off, True for on, the level string itself for gpt-oss -
+    or None when the model never thinks (key not sent)."""
+    levels = think_levels(model)
+    if not levels:
+        return None
+    if level not in levels:
+        level = "medium" if "medium" in levels else levels[-1]
+    if level == "off":
+        return False
+    if level == "on":
+        return True
+    return level
+
+
+def default_think_level(model):
+    levels = think_levels(model)
+    if not levels:
+        return None
+    return "medium" if "medium" in levels else "on"
 
 
 # ---------------------------------------------------------------- Ollama
@@ -322,10 +399,11 @@ class Streamer:
     queue as ("thinking", text), ("content", text), ("done", None),
     ("error", message)."""
 
-    def __init__(self, model, messages, events):
+    def __init__(self, model, messages, events, think=None):
         self.model = model
         self.messages = messages
         self.events = events
+        self.think = think
         self.stopped = threading.Event()
         self._resp = None
 
@@ -340,12 +418,12 @@ class Streamer:
     def run(self):
         payload = {"model": self.model, "messages": self.messages,
                    "stream": True, "options": {"num_ctx": NUM_CTX}}
-        if supports_thinking(self.model):
-            # Thinking models think, and the trace is shown in its
-            # collapsible block. There is no off switch (see the
-            # module docstring for why); models that never think
-            # are never sent the key at all.
-            payload["think"] = True
+        if self.think is not None:
+            # The level the user picked for this model (Menu >
+            # Thinking): False / True / "low"|"medium"|"high".
+            # Models that never think get think=None and are
+            # never sent the key at all.
+            payload["think"] = self.think
         req = urllib.request.Request(
             OLLAMA + "/api/chat",
             data=json.dumps(payload).encode("utf-8"),
@@ -983,18 +1061,11 @@ class App:
         self.status = tk.Label(head, text="", bg=PANEL, fg=GREEN_DIM,
                                font=(FONT, 9))
         self.status.pack(side="right", padx=14)
-        RoundedButton(head, text="Memory", kind="ghost", bg=PANEL,
-                      font=(FONT, 10, "bold"),
-                      command=self.open_memory).pack(side="right",
-                                                     pady=11)
-        RoundedButton(head, text="System", kind="ghost", bg=PANEL,
-                      font=(FONT, 10, "bold"),
-                      command=self.open_system).pack(side="right",
-                                                     padx=8, pady=11)
-        RoundedButton(head, text="Ollama", kind="ghost", bg=PANEL,
-                      font=(FONT, 10, "bold"),
-                      command=self.open_controller).pack(side="right",
-                                                         pady=11)
+        self.menu_btn = RoundedButton(head, text="Menu",
+                                      kind="ghost", bg=PANEL,
+                                      font=(FONT, 10, "bold"),
+                                      command=self._menu_popup)
+        self.menu_btn.pack(side="right", pady=11)
         self._model_names = [self.model.get()]
         self.model_btn = RoundedButton(head, text=self.model.get(),
                                        kind="ghost", font=(FONT, 10),
@@ -1003,13 +1074,6 @@ class App:
         self.model_btn.pack(side="right", pady=11)
         tk.Label(head, text="Model", bg=PANEL, fg=GREEN_DIM,
                  font=(FONT, 9)).pack(side="right", padx=(0, 6))
-        self.prompt_btn = RoundedButton(head, text="", kind="ghost",
-                                        font=(FONT, 10), bg=PANEL,
-                                        command=self._prompt_popup)
-        self.prompt_btn.pack(side="right", pady=11)
-        tk.Label(head, text="Prompt", bg=PANEL, fg=GREEN_DIM,
-                 font=(FONT, 9)).pack(side="right", padx=(0, 6))
-        self._refresh_prompt_btn()
 
         body = tk.Frame(self.root, bg=BG)
         body.pack(side="top", fill="both", expand=True)
@@ -1128,31 +1192,87 @@ class App:
                 return name
         return "Custom"
 
-    def _refresh_prompt_btn(self):
-        self.prompt_btn.configure(text=self._prompt_label())
+    # ---- thinking level ------------------------------------------
+    # Remembered per model in settings["think_levels"]; the
+    # choices offered are always the ones the current model
+    # supports (think_levels), never a superset.
 
-    def _prompt_popup(self):
+    def _think_level(self, model=None):
+        model = model or self.model.get()
+        levels = think_levels(model)
+        if not levels:
+            return None
+        saved = (self.store.settings.get("think_levels")
+                 or {}).get(model)
+        if saved in levels:
+            return saved
+        return default_think_level(model)
+
+    def _set_think_level(self, level):
+        d = dict(self.store.settings.get("think_levels") or {})
+        d[self.model.get()] = level
+        self.store.settings["think_levels"] = d
+        self.store.save_settings()
+
+    # ---- the header Menu ------------------------------------------
+    # One Menu button holds what used to be a row of header
+    # buttons: the prompt presets, the thinking level, and the
+    # way into every window (System, Memory, Ollama, Models).
+
+    def _menu_popup(self):
         tk = self.tk
-        menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=GREEN,
-                       activebackground=GREEN_FAINT,
-                       activeforeground=GREEN, bd=0,
-                       font=(FONT, 10))
-        menu.add_command(label="Default (built-in)",
-                         command=lambda: self._pick_prompt(None))
+        style = dict(tearoff=0, bg=PANEL2, fg=GREEN,
+                     activebackground=GREEN_FAINT,
+                     activeforeground=GREEN, bd=0, font=(FONT, 10))
+        menu = tk.Menu(self.root, **style)
+        pmenu = tk.Menu(menu, **style)
+        cur_prompt = self._prompt_label()
+        pmenu.add_command(
+            label=("✓ " if cur_prompt == "Default" else "   ")
+            + "Default (built-in)",
+            command=lambda: self._pick_prompt(None))
         for p in self._presets():
-            menu.add_command(
-                label=p.get("name", "?"),
-                command=lambda n=p.get("name"): self._pick_prompt(n))
+            nm = p.get("name", "?")
+            pmenu.add_command(
+                label=("✓ " if nm == cur_prompt else "   ") + nm,
+                command=lambda n=nm: self._pick_prompt(n))
+        pmenu.add_separator()
+        pmenu.add_command(label="Manage prompts…",
+                          command=self.open_system)
+        menu.add_cascade(label="Prompt: " + cur_prompt,
+                         menu=pmenu)
+        levels = think_levels(self.model.get())
+        if levels:
+            tmenu = tk.Menu(menu, **style)
+            cur = self._think_level()
+            for lv in levels:
+                tmenu.add_command(
+                    label=("✓ " if lv == cur else "   ")
+                    + lv.capitalize(),
+                    command=lambda v=lv: self._set_think_level(v))
+            menu.add_cascade(
+                label="Thinking: " + (cur or "").capitalize(),
+                menu=tmenu)
+        else:
+            menu.add_command(label="Thinking: not supported "
+                                   "by this model",
+                             state="disabled")
         menu.add_separator()
-        menu.add_command(label="Manage prompts…",
+        menu.add_command(label="System prompt…",
                          command=self.open_system)
-        x = self.prompt_btn.winfo_rootx()
-        y = (self.prompt_btn.winfo_rooty() +
-             self.prompt_btn.winfo_height())
+        menu.add_command(label="Memory…", command=self.open_memory)
+        menu.add_command(label="Ollama controller…",
+                         command=self.open_controller)
+        menu.add_command(label="Model Manager…",
+                         command=self.open_models)
+        x = self.menu_btn.winfo_rootx()
+        y = (self.menu_btn.winfo_rooty() +
+             self.menu_btn.winfo_height())
         try:
             menu.tk_popup(x, y)
         finally:
             menu.grab_release()
+        return menu
 
     def _pick_prompt(self, name):
         if name is None:
@@ -1168,7 +1288,6 @@ class App:
             else:
                 return
         self.store.save_settings()
-        self._refresh_prompt_btn()
 
     def _save_preset(self, name, text):
         name = (name or "").strip()
@@ -1181,7 +1300,6 @@ class App:
         self.store.settings["system_prompt"] = text
         self.store.settings["prompt_name"] = name
         self.store.save_settings()
-        self._refresh_prompt_btn()
         return True
 
     def _delete_preset(self, name):
@@ -1193,7 +1311,6 @@ class App:
         if self.store.settings.get("prompt_name") == name:
             self.store.settings["prompt_name"] = ""
         self.store.save_settings()
-        self._refresh_prompt_btn()
         return True
 
     # ---- system prompt (glass box) -------------------------------
@@ -1242,7 +1359,6 @@ class App:
                     break
             self.store.settings["prompt_name"] = match
             self.store.save_settings()
-            self._refresh_prompt_btn()
             saved.configure(text="Saved. The preview below already "
                                  "uses it.")
             refresh_preview()
@@ -1584,7 +1700,9 @@ class App:
         block = self._render_message("assistant", "", "")
         self._cur = {"block": block, "content": "", "thinking": ""}
         ctx = build_context(self.store, chat, model)
-        self.streamer = Streamer(model, ctx, self.events)
+        self.streamer = Streamer(
+            model, ctx, self.events,
+            think=think_wire(model, self._think_level(model)))
         self.busy = True
         self.send_btn.configure(text="Stop")
         self.status.configure(text="Generating…", fg=ORANGE)
@@ -1754,7 +1872,7 @@ class App:
         win.configure(bg=BG)
         mdl = {"win": win, "queue": queue.Queue(), "rows": {},
                "busy": None, "resp": None, "cancelled": False,
-               "drain_id": None}
+               "drain_id": None, "have": None, "hf_tags": []}
         self._mdl = mdl
 
         head = BubbleFrame(win, fill=PANEL, outline=BORDER,
@@ -1779,6 +1897,25 @@ class App:
                  bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
                  wraplength=540).pack(anchor="w", padx=14,
                                       pady=(10, 4))
+
+        sbar = tk.Frame(win, bg=BG)
+        sbar.pack(fill="x", padx=10, pady=(2, 2))
+        swrap = BubbleFrame(sbar, fill=PANEL2, outline=BORDER,
+                            radius=11, bg=BG)
+        swrap.pack(side="left", fill="x", expand=True)
+        mdl["hf_entry"] = tk.Entry(swrap, bg=PANEL2, fg=GREEN,
+                                   insertbackground=ORANGE, bd=0,
+                                   highlightthickness=0,
+                                   font=(FONT, 10))
+        mdl["hf_entry"].pack(fill="x", padx=10, pady=6)
+        mdl["hf_entry"].bind("<Return>",
+                             lambda e: self._hf_go(mdl))
+        mdl["hf_btn"] = RoundedButton(sbar, text="Search HF",
+                                      kind="ghost",
+                                      font=(FONT, 10, "bold"),
+                                      command=lambda:
+                                          self._hf_go(mdl))
+        mdl["hf_btn"].pack(side="right", padx=(8, 0))
 
         wrap = tk.Frame(win, bg=BG)
         wrap.pack(fill="both", expand=True, padx=10, pady=(2, 4))
@@ -1818,9 +1955,16 @@ class App:
         mdl["bind_wheel"] = bind_wheel
         bind_wheel(sb)
 
-        tk.Label(flow, text="ON THIS MACHINE", bg=BG,
-                 fg=ORANGE_DIM, font=(FONT, 9, "bold")).pack(
-                     anchor="w", padx=6, pady=(12, 4))
+        mdl["hf_label"] = tk.Label(flow, text="HUGGING FACE",
+                                   bg=BG, fg=ORANGE_DIM,
+                                   font=(FONT, 9, "bold"))
+        mdl["hf_frame"] = tk.Frame(flow, bg=BG)
+        mdl["inst_label"] = tk.Label(flow, text="ON THIS MACHINE",
+                                     bg=BG, fg=ORANGE_DIM,
+                                     font=(FONT, 9, "bold"))
+        mdl["inst_label"].pack(anchor="w", padx=6, pady=(12, 4))
+        mdl["hf_frame"].pack(fill="x",
+                             before=mdl["inst_label"])
         mdl["inst_frame"] = tk.Frame(flow, bg=BG)
         mdl["inst_frame"].pack(fill="x")
         tk.Label(mdl["inst_frame"], text="Checking...",
@@ -1852,8 +1996,9 @@ class App:
                                                    padx=12,
                                                    pady=(8, 0))
             tk.Label(rowf, text="%s - %s" % (tag, size), bg=PANEL,
-                     fg=GREEN_DIM, font=(MONO, 8)).pack(anchor="w",
-                                                        padx=12)
+                     fg=GREEN_DIM, font=(MONO, 8),
+                     anchor="w").pack(anchor="w", padx=12,
+                                      fill="x")
             tk.Label(rowf, text=blurb, bg=PANEL, fg=GREEN_DIM,
                      font=(FONT, 9), justify="left",
                      wraplength=320).pack(anchor="w", padx=12,
@@ -1942,9 +2087,9 @@ class App:
             status.pack(side="right", padx=(0, 2))
             row["status"] = status
             tk.Label(rowf, text=tag, bg=PANEL, fg=GREEN,
-                     font=(FONT, 11, "bold")).pack(anchor="w",
-                                                   padx=12,
-                                                   pady=(8, 0))
+                     font=(FONT, 11, "bold"),
+                     anchor="w").pack(anchor="w", padx=12,
+                                      pady=(8, 0), fill="x")
             tk.Label(rowf, text="%s on disk" % gb(mm.get(
                 "size", 0)), bg=PANEL, fg=GREEN_DIM,
                 font=(FONT, 8)).pack(anchor="w", padx=12,
@@ -1982,6 +2127,184 @@ class App:
             mdl["queue"].put(("deleted", tag))
         except Exception as e:
             mdl["queue"].put(("delete_error", (tag, str(e))))
+
+    # ---- Hugging Face search ----------------------------------
+    # GGUF repos from Hugging Face's public API (no account, no
+    # key). Each result row carries a quant picker - Q4_K_M by
+    # default - and downloads through the ordinary pull path
+    # under its hf.co tag, so progress, background downloads,
+    # the picker and Delete all work exactly as for catalog
+    # models.
+
+    def _hf_go(self, mdl):
+        query = mdl["hf_entry"].get().strip()
+        if not query:
+            mdl["note"].configure(
+                text="Type a name or a word to search "
+                     "Hugging Face.")
+            return
+        mdl["hf_btn"].set_enabled(False)
+        mdl["note"].configure(text="Searching Hugging Face...")
+        threading.Thread(target=self._hf_search,
+                         args=(mdl, query), daemon=True).start()
+
+    def _hf_search(self, mdl, query):
+        try:
+            qs = urllib.parse.urlencode(
+                {"search": query, "filter": "gguf",
+                 "sort": "downloads", "direction": "-1",
+                 "limit": "20"})
+            req = urllib.request.Request(
+                HF_API + "/api/models?" + qs,
+                headers={"User-Agent": "NexusChat"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                repos = json.loads(r.read().decode("utf-8"))
+
+            def quants_of(repo):
+                rid = repo.get("id", "")
+                try:
+                    u = (HF_API + "/api/models/"
+                         + urllib.parse.quote(rid, safe="/")
+                         + "/tree/main")
+                    rq = urllib.request.Request(
+                        u, headers={"User-Agent": "NexusChat"})
+                    with urllib.request.urlopen(rq,
+                                                timeout=30) as r:
+                        files = json.loads(
+                            r.read().decode("utf-8"))
+                    return hf_quants(files)
+                except Exception:
+                    return []
+
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                all_quants = list(pool.map(quants_of, repos))
+            results = []
+            for repo, quants in zip(repos, all_quants):
+                if not quants:
+                    continue
+                results.append({
+                    "id": repo.get("id", ""),
+                    "downloads": repo.get("downloads", 0),
+                    "quants": quants,
+                    "default": hf_default_quant(quants)})
+            mdl["queue"].put(("hf_results", results))
+        except Exception as e:
+            mdl["queue"].put(("hf_error", str(e)))
+
+    def _hf_render(self, mdl, results):
+        tk = self.tk
+        mdl["hf_btn"].set_enabled(True)
+        for tag in mdl.get("hf_tags", []):
+            mdl["rows"].pop(tag, None)
+        mdl["hf_tags"] = []
+        for child in mdl["hf_frame"].winfo_children():
+            child.destroy()
+        if not mdl["hf_label"].winfo_ismapped():
+            mdl["hf_label"].pack(anchor="w", padx=6,
+                                 pady=(12, 4),
+                                 before=mdl["hf_frame"])
+        if not results:
+            tk.Label(mdl["hf_frame"],
+                     text="No GGUF models found for that "
+                          "search.",
+                     bg=BG, fg=GREEN_DIM,
+                     font=(FONT, 9)).pack(anchor="w", padx=6)
+            mdl["note"].configure(
+                text="No GGUF models found - try another word.")
+            return
+        for res in results:
+            rowf = BubbleFrame(mdl["hf_frame"], fill=PANEL,
+                               outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            row = {"tag": "", "state": "ready",
+                   "repo": res["id"], "quants": res["quants"],
+                   "qidx": res["default"]}
+            btn = RoundedButton(
+                rowf, text="Download", kind="ghost",
+                font=(FONT, 10, "bold"), bg=PANEL,
+                command=lambda r=row: self._mdl_click(mdl, r))
+            btn.pack(side="right", padx=10, pady=10)
+            row["btn"] = btn
+            status = tk.Label(rowf, text="", bg=PANEL,
+                              fg=ORANGE_DIM, font=(FONT, 8))
+            status.pack(side="right", padx=(0, 2))
+            row["status"] = status
+            qbtn = RoundedButton(
+                rowf, text="", kind="quiet", font=(MONO, 9),
+                bg=PANEL,
+                command=lambda r=row:
+                    self._hf_quant_popup(mdl, r))
+            qbtn.pack(side="right", padx=(0, 2))
+            row["qbtn"] = qbtn
+            tk.Label(rowf, text=res["id"], bg=PANEL, fg=GREEN,
+                     font=(FONT, 10, "bold"), justify="left",
+                     anchor="w",
+                     wraplength=290).pack(anchor="w", padx=12,
+                                          pady=(8, 0), fill="x")
+            tk.Label(rowf,
+                     text="{:,} downloads".format(
+                         res["downloads"]),
+                     bg=PANEL, fg=GREEN_DIM,
+                     font=(FONT, 8)).pack(anchor="w", padx=12)
+            row["meta"] = tk.Label(rowf, text="", bg=PANEL,
+                                   fg=GREEN_DIM, font=(MONO, 8),
+                                   anchor="w")
+            row["meta"].pack(anchor="w", padx=12, pady=(0, 8),
+                             fill="x")
+            self._hf_retag(mdl, row)
+            mdl["bind_wheel"](rowf)
+        mdl["note"].configure(
+            text="%d models from Hugging Face. Pick a quant "
+                 "per model, then Download." % len(results))
+
+    def _hf_retag(self, mdl, row):
+        old = row.get("tag")
+        if old and mdl["rows"].get(old) is row:
+            del mdl["rows"][old]
+            if old in mdl["hf_tags"]:
+                mdl["hf_tags"].remove(old)
+        quant, size = row["quants"][row["qidx"]]
+        tag = "hf.co/" + row["repo"] + \
+            ((":" + quant) if quant else "")
+        row["tag"] = tag
+        mdl["rows"][tag] = row
+        mdl["hf_tags"].append(tag)
+        row["qbtn"].configure(text=(quant or "standard")
+                              + " ▾")
+        row["meta"].configure(text="%s download" % gb(size))
+        if mdl.get("have") is not None:
+            self._mdl_set_row(
+                mdl, row,
+                "installed" if tag in mdl["have"] else "ready")
+
+    def _hf_set_quant(self, mdl, row, idx):
+        if row["state"] == "busy" or idx == row["qidx"]:
+            return
+        row["qidx"] = idx
+        self._hf_retag(mdl, row)
+
+    def _hf_quant_popup(self, mdl, row):
+        tk = self.tk
+        menu = tk.Menu(mdl["win"], tearoff=0, bg=PANEL2,
+                       fg=GREEN, activebackground=GREEN_FAINT,
+                       activeforeground=GREEN, bd=0,
+                       font=(MONO, 9))
+        for i, (q, size) in enumerate(row["quants"]):
+            menu.add_command(
+                label=("✓ " if i == row["qidx"] else "   ")
+                + "%s - %s" % (q or "standard", gb(size)),
+                command=lambda j=i: self._hf_set_quant(mdl,
+                                                       row, j))
+        x = row["qbtn"].winfo_rootx()
+        y = (row["qbtn"].winfo_rooty()
+             + row["qbtn"].winfo_height())
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+        return menu
 
     def _mdl_set_row(self, mdl, row, state):
         row["state"] = state
@@ -2124,14 +2447,16 @@ class App:
                             self._mdl_set_row(mdl, r, "unknown")
                     else:
                         have = set(mm["name"] for mm in payload)
-                        n = 0
+                        mdl["have"] = have
                         for r in mdl["rows"].values():
                             if r["tag"] in have:
                                 self._mdl_set_row(mdl, r,
                                                   "installed")
-                                n += 1
                             else:
                                 self._mdl_set_row(mdl, r, "ready")
+                        n = sum(1 for t, r in mdl["rows"].items()
+                                if t in CAT_TAGS
+                                and r["state"] == "installed")
                         mdl["count"].configure(
                             text="%d of %d here" % (n,
                                                     len(OPTIONAL_MODELS)))
@@ -2149,8 +2474,9 @@ class App:
                     for r in mdl["rows"].values():
                         if r["state"] == "ready":
                             r["btn"].set_enabled(True)
-                    n = sum(1 for r in mdl["rows"].values()
-                            if r["state"] == "installed")
+                    n = sum(1 for t, r in mdl["rows"].items()
+                            if t in CAT_TAGS
+                            and r["state"] == "installed")
                     mdl["count"].configure(
                         text="%d of %d here" % (n,
                                                 len(OPTIONAL_MODELS)))
@@ -2158,6 +2484,13 @@ class App:
                         text="%s installed - it is in the model "
                              "picker now." % payload)
                     self._mdl_refresh(mdl)
+                elif kind == "hf_results":
+                    self._hf_render(mdl, payload)
+                elif kind == "hf_error":
+                    mdl["hf_btn"].set_enabled(True)
+                    mdl["note"].configure(
+                        text="Hugging Face search failed: "
+                             + payload)
                 elif kind == "deleted":
                     mdl["note"].configure(
                         text="%s deleted - its disk space is "

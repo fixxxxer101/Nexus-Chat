@@ -47,7 +47,14 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   lists what's on the machine (with sizes) and a catalog of
   optional downloads — Qwen3, GPT-OSS, Mistral, Gemma, the
   coders, vision models — with live download progress and
-  delete for anything except the required model.
+  delete for anything except the required model. A built-in
+  **Hugging Face search** finds any GGUF repo, with a quant
+  picker per result (Q4_K_M by default).
+- **One Menu, thinking levels.** The header's **Menu** button
+  holds the prompt presets, the windows (System, Memory,
+  Ollama, Models) and a **thinking level** setting remembered
+  per model — low / medium / high for gpt-oss, off / on for
+  Qwen3-class models, exactly what each model supports.
 - **Modern rounded theme.** Pill-shaped buttons, floating
   rounded cards for the header, sidebar and input bar, big soft
   chat bubbles, and every text and list panel in the windows
