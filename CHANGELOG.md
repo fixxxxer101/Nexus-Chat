@@ -5,6 +5,17 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.38.0 — 2026-11-22
+Menu → Make a Report…: say what should be fixed,
+changed or added (type picker, title, details), click
+Create report file, and a text file lands in the data
+dir's reports/ folder - stamped with the app version,
+the date, and whose machine it came from, with the
+last Error Log error attached unless you switch that
+off - and the folder opens in Explorer / the file
+manager, ready to send in Discord or drag into a
+chat. An Open reports folder button lives there too.
+
 ## 1.37.0 — 2026-11-22
 Menu → README…: the manual lives in the app now. The
 window shows your checkout's README (the copy that

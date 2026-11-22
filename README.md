@@ -1,8 +1,8 @@
 # Nexus Gate
 
-<!-- README-STATUS: matches Nexus Gate v1.37.0 -->
+<!-- README-STATUS: matches Nexus Gate v1.38.0 -->
 
-**README status: current as of Nexus Gate v1.37.0.**
+**README status: current as of Nexus Gate v1.38.0.**
 The app's header shows its version; if it shows a newer one than
 this line, this README has fallen behind and needs a catch-up —
 [CHANGELOG.md](CHANGELOG.md) is always current.
@@ -77,7 +77,11 @@ machine — no accounts, no cloud, nothing leaves the machine.
   app's log with the actual tracebacks (the app captures its
   own UI and worker-thread errors into it) — Copy last error
   grabs just the newest one, ready to paste to whoever is
-  debugging with you.
+  debugging with you. And **Menu → Make a Report…** turns
+  a fix / change / add request into a stamped text file
+  (last error attached unless you switch it off) and
+  opens its folder — built for handing requests over
+  Discord or drag-and-drop.
 - **Prompt presets.** Save named system prompts in the System
   window, delete them, click to use one — and switch between
   them right in the main window from the **Prompt** picker next
@@ -133,7 +137,8 @@ machine — no accounts, no cloud, nothing leaves the machine.
   never touches the original file.
 - **One Menu, thinking levels.** The header's **Menu** button
   holds the windows (System, Memory, Knowledge Bases, Ollama,
-  Model Manager, Image Models, Error Log, README), Settings (frame,
+  Model Manager, Image Models, Error Log, README,
+  Make a Report), Settings (frame,
   content opacity, update checks, context size), Update,
   and a **thinking level** setting remembered per model —
   low / medium / high for gpt-oss, off / on for Qwen3-class

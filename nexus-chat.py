@@ -89,7 +89,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.37.0"
+VERSION = "1.38.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -2660,6 +2660,7 @@ class App:
         self._imw = None               # Image Models window
         self._logwin = None            # Error Log window
         self._readme_win = None        # README window
+        self._report_win = None        # Make a Report win
         # Errors land in the log file, where the Error Log
         # window (Menu -> Error Log...) can show them: UI
         # callback exceptions and worker-thread exceptions
@@ -3223,6 +3224,8 @@ class App:
                          command=self.open_log)
         menu.add_command(label="README…",
                          command=self.open_readme)
+        menu.add_command(label="Make a Report…",
+                         command=self.open_report)
         menu.add_separator()
         menu.add_command(label="Update Nexus Gate…",
                          command=self.open_update)
@@ -7495,6 +7498,208 @@ class App:
         if pos < len(s):
             t.insert("end", s[pos:])
 
+    # ---- Make a Report window ---------------------------
+    # Menu → Make a Report…: type what should be fixed,
+    # changed or added; one click writes a text file
+    # into the reports folder and opens that folder, so
+    # the file is one drag away from Discord or a chat.
+    _REPORT_TYPES = ("Fix", "Change", "Add")
+
+    def open_report(self):
+        tk = self.tk
+        if self._report_win is not None:
+            try:
+                self._report_win["win"].deiconify()
+                self._report_win["win"].lift()
+                return
+            except Exception:
+                self._report_win = None
+        win = tk.Toplevel(self.root)
+        style_window(win)
+        win.title("Make a Report")
+        win.geometry("600x540")
+        win.minsize(460, 440)
+        win.configure(bg=BG)
+        rw = {"win": win, "type": "Fix", "attach": True}
+        self._report_win = rw
+        head = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG,
+                           height=56)
+        head.pack(side="top", fill="x", padx=10,
+                  pady=(10, 0))
+        head.pack_propagate(False)
+        tk.Label(head, text="MAKE A REPORT", bg=PANEL,
+                 fg=GREEN, font=(FONT, 13, "bold")).pack(
+                     side="left", padx=16, pady=14)
+        tk.Label(win, text="Say what you want fixed, "
+                           "changed or added. One click "
+                           "makes a text file and opens its "
+                           "folder - send it in Discord or "
+                           "drag it into a chat.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left", wraplength=560).pack(
+                     anchor="w", padx=14, pady=(8, 2))
+        trow = tk.Frame(win, bg=BG)
+        trow.pack(fill="x", padx=14, pady=(4, 2))
+        tk.Label(trow, text="This is a:", bg=BG, fg=GREEN,
+                 font=(FONT, 10, "bold")).pack(side="left")
+        rw["type_row"] = tk.Frame(trow, bg=BG)
+        rw["type_row"].pack(side="left", padx=(10, 0))
+        self._report_type_render(rw)
+        tk.Label(win, text="TITLE", bg=BG, fg=ORANGE_DIM,
+                 font=(FONT, 8, "bold")).pack(
+                     anchor="w", padx=14, pady=(6, 2))
+        rw["title"] = tk.Entry(
+            win, bg=PANEL, fg=GREEN, bd=0,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER,
+            insertbackground=ORANGE, font=(FONT, 10))
+        rw["title"].pack(fill="x", padx=14)
+        tk.Label(win, text="DETAILS", bg=BG, fg=ORANGE_DIM,
+                 font=(FONT, 8, "bold")).pack(
+                     anchor="w", padx=14, pady=(8, 2))
+        wrap = tk.Frame(win, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=14)
+        det = tk.Text(wrap, bg=PANEL, fg=GREEN, bd=0,
+                      highlightthickness=1,
+                      highlightbackground=BORDER,
+                      highlightcolor=BORDER,
+                      insertbackground=ORANGE,
+                      font=(FONT, 10), wrap="word",
+                      padx=10, pady=8)
+        sb = RoundedScrollbar(wrap, command=det.yview,
+                              bg=BG)
+        det.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", padx=(4, 0))
+        det.pack(side="left", fill="both", expand=True)
+        rw["details"] = det
+        arow = tk.Frame(win, bg=BG)
+        arow.pack(fill="x", padx=14, pady=(8, 0))
+        rw["attach_btn"] = RoundedButton(
+            arow, text="Attach the last error: ON",
+            kind="ghost", font=(FONT, 9, "bold"), bg=BG,
+            command=lambda: self._report_attach_toggle(rw))
+        rw["attach_btn"].pack(side="left")
+        self._report_attach_render(rw)
+        brow = tk.Frame(win, bg=BG)
+        brow.pack(fill="x", padx=14, pady=(10, 2))
+        RoundedButton(
+            brow, text="Create report file",
+            kind="primary", font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._report_create(rw)).pack(
+                side="left")
+        RoundedButton(
+            brow, text="Open reports folder", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=self._report_open_folder).pack(
+                side="left", padx=(8, 0))
+        rw["note"] = tk.Label(win, text="", bg=BG,
+                              fg=ORANGE_DIM, font=(FONT, 9),
+                              justify="left", wraplength=560)
+        rw["note"].pack(anchor="w", padx=14, pady=(2, 10))
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: self._report_close(rw))
+
+    def _report_close(self, rw):
+        if self._report_win is not rw:
+            return
+        self._report_win = None
+        try:
+            rw["win"].destroy()
+        except Exception:
+            pass
+
+    def _report_type_render(self, rw):
+        for w in rw["type_row"].winfo_children():
+            w.destroy()
+        for t in self._REPORT_TYPES:
+            RoundedButton(
+                rw["type_row"], text=t,
+                kind="primary" if t == rw["type"]
+                else "ghost",
+                font=(FONT, 10, "bold"), bg=BG,
+                command=lambda t_=t:
+                    self._report_type_pick(rw, t_)).pack(
+                        side="left", padx=(0, 6))
+
+    def _report_type_pick(self, rw, t):
+        rw["type"] = t
+        self._report_type_render(rw)
+
+    def _report_attach_render(self, rw):
+        rw["attach_btn"]._text = (
+            "Attach the last error: ON" if rw["attach"]
+            else "Attach the last error: OFF")
+        rw["attach_btn"]._draw()
+
+    def _report_attach_toggle(self, rw):
+        rw["attach"] = not rw["attach"]
+        self._report_attach_render(rw)
+
+    def _report_open_folder(self):
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        open_folder(REPORTS_DIR)
+
+    def _report_create(self, rw):
+        title = rw["title"].get().strip()
+        details = rw["details"].get("1.0", "end").strip()
+        if not title and not details:
+            rw["note"].configure(
+                text="Write something first - a title or "
+                     "a few lines about what you want.")
+            return None
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        slug_src = title or details.splitlines()[0]
+        slug = re.sub(r"[^a-z0-9]+", "-",
+                      slug_src.lower()).strip("-")[:40]
+        slug = slug.strip("-") or "report"
+        base = "nexus-report-%s-%s-%s" % (
+            stamp, rw["type"].lower(), slug)
+        path = os.path.join(REPORTS_DIR, base + ".txt")
+        n = 2
+        while os.path.exists(path):
+            path = os.path.join(
+                REPORTS_DIR, "%s-%d.txt" % (base, n))
+            n += 1
+        user, host, osname = report_context()
+        lines = [
+            "Nexus Gate Report",
+            "Type: " + rw["type"],
+            "Title: " + (title or "(no title)"),
+            "Date: " + time.strftime("%Y-%m-%d %H:%M:%S"),
+            "App: %s v%s" % (APP_NAME, VERSION),
+            "From: %s on %s (%s)" % (user, host, osname),
+            "",
+            "What I want:",
+            details or "(see title)",
+        ]
+        if rw["attach"]:
+            err = last_error_from(read_log_tail())
+            if err:
+                lines += ["",
+                          "--- Last error from the "
+                          "Error Log ---",
+                          err]
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        opened = open_folder(REPORTS_DIR)
+        if opened:
+            rw["note"].configure(
+                text="Created %s - its folder is open. "
+                     "Send the file in Discord or drag "
+                     "it into a chat."
+                     % os.path.basename(path))
+        else:
+            rw["note"].configure(
+                text="Created %s in %s"
+                     % (os.path.basename(path),
+                        REPORTS_DIR))
+        rw["title"].delete(0, "end")
+        rw["details"].delete("1.0", "end")
+        return path
+
     def _log_refresh(self, lw):
         text_str = read_log_tail()
         lw["text_str"] = text_str
@@ -8637,6 +8842,49 @@ def find_repo():
         if c and os.path.isdir(os.path.join(c, ".git")):
             return c
     return None
+
+
+REPORTS_DIR = os.path.join(DATA_DIR, "reports")
+
+
+def last_error_from(text):
+    """The newest traceback in a log text (or its last
+    30 lines when there is none) - the same chunk the
+    Error Log window's Copy last error produces."""
+    idx = text.rfind("Traceback (most recent call last):")
+    if idx >= 0:
+        start = text.rfind("\n", 0, idx)
+        return text[start + 1:].strip()
+    return "\n".join(text.splitlines()[-30:]).strip()
+
+
+def open_folder(path):
+    """Open a folder in the OS file manager. True when
+    the open was issued."""
+    try:
+        if IS_WINDOWS:
+            os.startfile(path)      # Windows only
+            return True
+        opener = "open" if sys.platform == "darwin" \
+            else "xdg-open"
+        subprocess.Popen([opener, path])
+        return True
+    except Exception:
+        return False
+
+
+def report_context():
+    """(user, host, os) stamped into a report file, so
+    the reader knows whose machine it came from."""
+    user = (os.environ.get("USERNAME")
+            or os.environ.get("USER") or "unknown")
+    host = os.environ.get("COMPUTERNAME") or ""
+    if not host and hasattr(os, "uname"):
+        host = os.uname().nodename
+    host = host or "unknown machine"
+    osname = {"win32": "Windows",
+              "darwin": "macOS"}.get(sys.platform, "Linux")
+    return user, host, osname
 
 
 def local_readme():
