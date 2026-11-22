@@ -5,6 +5,12 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.9.2 — 2026-11-21
+Fix: the bevel's light edge now runs all the way around each
+surface — the two-tone version (light top, dark bottom) read
+as lit from above only; the full light outline is the look
+asked for.
+
 ## 1.9.1 — 2026-11-21
 Fix: bevels on every raised surface — a light line along the
 top/left edges and a dark line along the bottom/right (green
