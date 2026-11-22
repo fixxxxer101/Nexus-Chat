@@ -5,6 +5,22 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.39.0 — 2026-11-22
+Menu → Train a LoRA…: a full training section. Build
+a dataset in the window - add images from files or
+straight from your generations (their prompts come
+along as captions), edit captions, set a trigger
+word and repeats - then train with the kohya
+sd-scripts trainer (pinned v0.13.0), which installs
+on demand into its own venv with a CPU build of
+PyTorch: CPU training works everywhere, no GPU
+required. The exact training command is shown in
+the window before you run it; progress and the
+trainer's log stream live; the finished LoRA lands
+in your LoRAs, ready for the studio's LoRA Insert.
+Projects (dataset + settings) live in the data
+dir's lora-training folder.
+
 ## 1.38.0 — 2026-11-22
 Menu → Make a Report…: say what should be fixed,
 changed or added (type picker, title, details), click

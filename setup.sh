@@ -107,6 +107,16 @@ else
   say "Pillow did not install - the image viewer will use basic scaling"
 fi
 
+# The LoRA trainer (Menu -> Train a LoRA) runs in its own
+# venv; make sure venv creation works on this machine.
+if python3 -c "import ensurepip" >/dev/null 2>&1; then
+  skip "python venv support present"
+else
+  say "installing python3-venv (for the LoRA trainer)"
+  sudo apt-get update -qq && sudo apt-get install -y python3-venv >/dev/null 2>&1 \
+    || say "python3-venv did not install - the LoRA trainer's Install button will report if it cannot create its environment"
+fi
+
 # ---- 5. Image engine + baseline model ----------------------------------
 say "Step 5/5: image engine + baseline model"
 DATA_DIR="$HOME/.local/share/nexus-chat"

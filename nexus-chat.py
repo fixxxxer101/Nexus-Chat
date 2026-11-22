@@ -89,7 +89,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.38.0"
+VERSION = "1.39.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -2661,6 +2661,9 @@ class App:
         self._logwin = None            # Error Log window
         self._readme_win = None        # README window
         self._report_win = None        # Make a Report win
+        self._train_win = None         # Train a LoRA win
+        self._train_job = None         # running train job
+        self._train_installing = False
         # Errors land in the log file, where the Error Log
         # window (Menu -> Error Log...) can show them: UI
         # callback exceptions and worker-thread exceptions
@@ -3218,6 +3221,8 @@ class App:
                          command=self.open_models)
         menu.add_command(label="Image Models…",
                          command=self.open_image_models)
+        menu.add_command(label="Train a LoRA…",
+                         command=self.open_train)
         menu.add_command(label="Knowledge Bases…",
                          command=self.open_kbases)
         menu.add_command(label="Error Log…",
@@ -5631,6 +5636,48 @@ class App:
                                 "Fetch failed")
                         else:
                             self._readme_fill(rw, got, src)
+                elif kind == "trinst_log":
+                    tw = self._train_win
+                    if tw is not None:
+                        tw["log_lbl"].configure(
+                            text=text[-110:])
+                elif kind == "trinst_done":
+                    self._train_installing = False
+                    tw = self._train_win
+                    if tw is not None:
+                        self._train_engine_render(tw)
+                        tw["note"].configure(
+                            text="Trainer installed and "
+                                 "ready." if text else
+                                 "Install did not finish "
+                                 "- the log line above "
+                                 "shows where it stopped; "
+                                 "the Error Log has the "
+                                 "details.")
+                elif kind == "train_log":
+                    job = self._train_job
+                    if job is not None:
+                        job["last_log"] = text
+                    tw = self._train_win
+                    if tw is not None:
+                        tw["log_lbl"].configure(
+                            text=text[-110:])
+                elif kind == "train_step":
+                    job = self._train_job
+                    if job is not None:
+                        frac, label = text
+                        if frac is not None:
+                            job["frac"] = frac
+                        job["last_status"] = label
+                    tw = self._train_win
+                    if tw is not None:
+                        if text[0] is not None:
+                            self._train_bar(
+                                tw, text[0])
+                        tw["status_lbl"].configure(
+                            text=text[1])
+                elif kind == "train_done":
+                    self._train_finish(text)
                 elif kind == "img_log":
                     if self._img_job is not None:
                         self._img_job["last_log"] = text
@@ -7326,6 +7373,663 @@ class App:
         except Exception:
             pass
 
+    # ---- Train a LoRA window --------------------------
+    # Menu → Train a LoRA…: build a dataset (images +
+    # captions), train it with the kohya trainer
+    # (sd-scripts, CPU-capable, installs on demand),
+    # and the finished LoRA lands with the others.
+    def open_train(self):
+        tk = self.tk
+        if self._train_win is not None:
+            try:
+                self._train_win["win"].deiconify()
+                self._train_win["win"].lift()
+                return
+            except Exception:
+                self._train_win = None
+        win = tk.Toplevel(self.root)
+        style_window(win)
+        win.title("Train a LoRA")
+        win.geometry("640x680")
+        win.minsize(520, 560)
+        win.configure(bg=BG)
+        tw = {"win": win, "project": None, "sel": -1}
+        self._train_win = tw
+        head = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG,
+                           height=56)
+        head.pack(side="top", fill="x", padx=10,
+                  pady=(10, 0))
+        head.pack_propagate(False)
+        tk.Label(head, text="TRAIN A LORA", bg=PANEL,
+                 fg=GREEN, font=(FONT, 13, "bold")).pack(
+                     side="left", padx=16, pady=14)
+        erow = tk.Frame(win, bg=BG)
+        erow.pack(fill="x", padx=14, pady=(8, 0))
+        tw["engine_lbl"] = tk.Label(
+            erow, text="", bg=BG, fg=GREEN_DIM,
+            font=(FONT, 9), anchor="w")
+        tw["engine_lbl"].pack(side="left", fill="x",
+                              expand=True)
+        tw["install_btn"] = RoundedButton(
+            erow, text="Install trainer", kind="ghost",
+            font=(FONT, 9, "bold"), bg=BG,
+            command=lambda: self._train_install(tw))
+        tw["install_btn"].pack(side="right")
+        prow = tk.Frame(win, bg=BG)
+        prow.pack(fill="x", padx=14, pady=(8, 0))
+        tk.Label(prow, text="PROJECT", bg=BG,
+                 fg=ORANGE_DIM, font=(FONT, 8, "bold")).pack(
+                     side="left")
+        tw["proj_btn"] = RoundedButton(
+            prow, text="(none)", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._train_project_popup(tw))
+        tw["proj_btn"].pack(side="left", padx=(10, 6))
+        RoundedButton(
+            prow, text="New…", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._train_new_dialog(tw)
+            ).pack(side="left")
+        tk.Label(win, text="DATASET", bg=BG,
+                 fg=ORANGE_DIM, font=(FONT, 8, "bold")).pack(
+                     anchor="w", padx=14, pady=(10, 2))
+        tw["list"] = tk.Listbox(
+            win, height=5, bg=PANEL2, fg=GREEN, bd=0,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER, font=(FONT, 9),
+            selectbackground=ORANGE,
+            selectforeground="#0a0f0a",
+            activestyle="none")
+        tw["list"].pack(fill="x", padx=14)
+        tw["list"].bind(
+            "<<ListboxSelect>>",
+            lambda e: self._train_select(tw))
+        brow = tk.Frame(win, bg=BG)
+        brow.pack(fill="x", padx=14, pady=(6, 0))
+        RoundedButton(
+            brow, text="Add images…", kind="ghost",
+            font=(FONT, 9, "bold"), bg=BG,
+            command=lambda: self._train_add_files(tw)
+            ).pack(side="left")
+        RoundedButton(
+            brow, text="Add from generations…",
+            kind="ghost", font=(FONT, 9, "bold"), bg=BG,
+            command=lambda: self._train_add_gen(tw)
+            ).pack(side="left", padx=(6, 0))
+        RoundedButton(
+            brow, text="Remove", kind="ghost",
+            font=(FONT, 9, "bold"), bg=BG,
+            command=lambda: self._train_remove(tw)
+            ).pack(side="left", padx=(6, 0))
+        tk.Label(win, text="Caption for the selected "
+                           "image", bg=BG, fg=GREEN_DIM,
+                 font=(FONT, 8)).pack(anchor="w", padx=14,
+                                      pady=(8, 2))
+        tw["caption"] = tk.Entry(
+            win, bg=PANEL, fg=GREEN, bd=0,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER,
+            insertbackground=ORANGE, font=(FONT, 10))
+        tw["caption"].pack(fill="x", padx=14)
+        tw["caption"].bind(
+            "<KeyRelease>",
+            lambda e: self._train_cap_store(tw))
+        trow = tk.Frame(win, bg=BG)
+        trow.pack(fill="x", padx=14, pady=(8, 0))
+        tk.Label(trow, text="Trigger word", bg=BG,
+                 fg=GREEN_DIM, font=(FONT, 9)).pack(
+                     side="left")
+        tw["trigger"] = tk.Entry(
+            trow, bg=PANEL, fg=GREEN, bd=0, width=16,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER,
+            insertbackground=ORANGE, font=(FONT, 10))
+        tw["trigger"].pack(side="left", padx=(6, 14))
+        tk.Label(trow, text="Repeats", bg=BG,
+                 fg=GREEN_DIM, font=(FONT, 9)).pack(
+                     side="left")
+        tw["repeats"] = tk.Entry(
+            trow, bg=PANEL, fg=GREEN, bd=0, width=5,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER,
+            insertbackground=ORANGE, font=(FONT, 10))
+        tw["repeats"].pack(side="left", padx=(6, 0))
+        tk.Label(win, text="TRAINING", bg=BG,
+                 fg=ORANGE_DIM, font=(FONT, 8, "bold")).pack(
+                     anchor="w", padx=14, pady=(10, 2))
+        mrow = tk.Frame(win, bg=BG)
+        mrow.pack(fill="x", padx=14)
+        tk.Label(mrow, text="Base model", bg=BG,
+                 fg=GREEN_DIM, font=(FONT, 9)).pack(
+                     side="left")
+        tw["model_btn"] = RoundedButton(
+            mrow, text="(pick)", kind="ghost",
+            font=(FONT, 9, "bold"), bg=BG,
+            command=lambda: self._train_model_popup(tw))
+        tw["model_btn"].pack(side="left", padx=(6, 0))
+        prow2 = tk.Frame(win, bg=BG)
+        prow2.pack(fill="x", padx=14, pady=(8, 0))
+        tw["fields"] = {}
+        for key, label, width in (
+                ("dim", "Rank", 4), ("alpha", "Alpha", 4),
+                ("lr", "Learn rate", 7),
+                ("epochs", "Epochs", 4)):
+            tk.Label(prow2, text=label, bg=BG,
+                     fg=GREEN_DIM, font=(FONT, 9)).pack(
+                         side="left",
+                         padx=(0 if key == "dim" else 10, 0))
+            e = tk.Entry(
+                prow2, bg=PANEL, fg=GREEN, bd=0,
+                width=width, highlightthickness=1,
+                highlightbackground=BORDER,
+                highlightcolor=BORDER,
+                insertbackground=ORANGE, font=(FONT, 10))
+            e.pack(side="left", padx=(4, 0))
+            e.bind("<KeyRelease>",
+                   lambda ev: self._train_cmd_refresh(tw))
+            tw["fields"][key] = e
+        tw["te_btn"] = RoundedButton(
+            prow2, text="Text encoder: OFF", kind="ghost",
+            font=(FONT, 9, "bold"), bg=BG,
+            command=lambda: self._train_te_toggle(tw))
+        tw["te_btn"].pack(side="left", padx=(12, 0))
+        tw["cmd_lbl"] = tk.Label(
+            win, text="", bg=BG, fg=GREEN_DIM,
+            font=(MONO, 7), justify="left", anchor="w",
+            wraplength=600)
+        tw["cmd_lbl"].pack(fill="x", padx=14, pady=(8, 0))
+        tw["bar"] = tk.Canvas(win, height=8, bg=BG, bd=0,
+                              highlightthickness=0)
+        tw["bar"].pack(fill="x", padx=14, pady=(8, 0))
+        tw["status_lbl"] = tk.Label(
+            win, text="", bg=BG, fg=GREEN, font=(FONT, 9),
+            anchor="w")
+        tw["status_lbl"].pack(fill="x", padx=14,
+                              pady=(4, 0))
+        tw["log_lbl"] = tk.Label(
+            win, text="", bg=BG, fg=GREEN_DIM,
+            font=(MONO, 8), anchor="w")
+        tw["log_lbl"].pack(fill="x", padx=14)
+        runrow = tk.Frame(win, bg=BG)
+        runrow.pack(fill="x", padx=14, pady=(8, 0))
+        tw["train_btn"] = RoundedButton(
+            runrow, text="Train", kind="primary",
+            font=(FONT, 11, "bold"), bg=BG,
+            command=lambda: self._train_start(tw))
+        tw["train_btn"].pack(side="left")
+        tw["cancel_btn"] = RoundedButton(
+            runrow, text="Cancel", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._train_cancel(tw))
+        tw["cancel_btn"].pack(side="left", padx=(8, 0))
+        tw["cancel_btn"].set_enabled(False)
+        tw["note"] = tk.Label(
+            win, text="", bg=BG, fg=ORANGE_DIM,
+            font=(FONT, 9), justify="left",
+            wraplength=600)
+        tw["note"].pack(anchor="w", padx=14, pady=(6, 10))
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: self._train_close(tw))
+        slug = self.store.settings.get(
+            "train_project") or ""
+        p = load_train_project(slug) if slug else None
+        if p is None:
+            slugs = train_project_slugs()
+            if slugs:
+                p = load_train_project(slugs[0])
+        self._train_engine_render(tw)
+        if p is not None:
+            self._train_show_project(tw, p)
+        else:
+            tw["note"].configure(
+                text="No projects yet - click New… to "
+                     "start one.")
+
+    def _train_close(self, tw):
+        if self._train_win is not tw:
+            return
+        self._train_collect(tw)
+        self._train_win = None
+        try:
+            tw["win"].destroy()
+        except Exception:
+            pass
+
+    def _train_engine_render(self, tw):
+        if trainer_ready():
+            tw["engine_lbl"].configure(
+                text="Trainer: ready (sd-scripts "
+                     + SD_SCRIPTS_TAG + ", CPU torch)")
+            tw["install_btn"]._text = "Reinstall trainer"
+        elif self._train_installing:
+            tw["engine_lbl"].configure(
+                text="Trainer: installing - the log "
+                     "line below shows progress…")
+            tw["install_btn"]._text = "Installing…"
+        else:
+            tw["engine_lbl"].configure(
+                text="Trainer: not installed (one "
+                     "download, ~1 GB - CPU training "
+                     "engine)")
+            tw["install_btn"]._text = "Install trainer"
+        tw["install_btn"]._draw()
+
+    def _train_install(self, tw):
+        if self._train_installing:
+            return
+        self._train_installing = True
+        self._train_engine_render(tw)
+
+        def emit(kind, payload):
+            self.events.put(("trinst_" + kind, payload))
+
+        def work():
+            install_trainer(emit)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _train_show_project(self, tw, p):
+        tw["project"] = p
+        tw["sel"] = -1
+        self.store.settings["train_project"] = p["slug"]
+        self.store.save_settings()
+        tw["proj_btn"]._text = p["name"]
+        tw["proj_btn"]._draw()
+        tw["trigger"].delete(0, "end")
+        tw["trigger"].insert(0, p.get("trigger") or "")
+        tw["repeats"].delete(0, "end")
+        tw["repeats"].insert(0, str(p.get("repeats")
+                                     or 10))
+        for key in ("dim", "alpha", "lr", "epochs"):
+            tw["fields"][key].delete(0, "end")
+            tw["fields"][key].insert(0, str(p.get(key)
+                                             or ""))
+        self._train_te_render(tw)
+        self._train_list_render(tw)
+        self._train_model_render(tw)
+        self._train_cmd_refresh(tw)
+
+    def _train_collect(self, tw):
+        p = tw.get("project")
+        if p is None:
+            return None
+        self._train_cap_store(tw)
+        p["trigger"] = tw["trigger"].get().strip()
+        try:
+            p["repeats"] = max(
+                1, int(tw["repeats"].get() or 10))
+        except ValueError:
+            p["repeats"] = 10
+        for key in ("dim", "alpha", "epochs"):
+            try:
+                p[key] = int(tw["fields"][key].get())
+            except (ValueError, TypeError):
+                pass
+        p["lr"] = tw["fields"]["lr"].get().strip() \
+            or p.get("lr") or "1e-4"
+        save_train_project(p)
+        return p
+
+    def _train_project_popup(self, tw):
+        self._train_collect(tw)
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL,
+                       fg=GREEN, bd=0,
+                       activebackground=ORANGE,
+                       activeforeground="#0a0f0a")
+        slugs = train_project_slugs()
+        if not slugs:
+            menu.add_command(label="(no projects)",
+                             state="disabled")
+        for slug in slugs:
+            p = load_train_project(slug)
+            menu.add_command(
+                label=(p["name"] if p else slug),
+                command=lambda s=slug:
+                    self._train_show_project(
+                        tw, load_train_project(s)))
+        try:
+            menu.tk_popup(
+                tw["proj_btn"].winfo_rootx(),
+                tw["proj_btn"].winfo_rooty()
+                + tw["proj_btn"].winfo_height())
+        finally:
+            menu.grab_release()
+
+    def _train_new_dialog(self, tw):
+        tk = self.tk
+        dlg = tk.Toplevel(tw["win"])
+        style_window(dlg)
+        dlg.title("New LoRA project")
+        dlg.geometry("340x150")
+        dlg.configure(bg=BG)
+        dlg.transient(tw["win"])
+        tk.Label(dlg, text="Name the LoRA (a person, a "
+                           "style, an object…)", bg=BG,
+                 fg=GREEN, font=(FONT, 10),
+                 wraplength=300, justify="left").pack(
+                     anchor="w", padx=14, pady=(12, 6))
+        name_e = tk.Entry(
+            dlg, bg=PANEL, fg=GREEN, bd=0,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER,
+            insertbackground=ORANGE, font=(FONT, 11))
+        name_e.pack(fill="x", padx=14)
+        name_e.focus_set()
+
+        def create():
+            name = name_e.get().strip()
+            if not name:
+                return
+            p = new_train_project(name)
+            dlg.destroy()
+            self._train_show_project(tw, p)
+
+        RoundedButton(dlg, text="Create", kind="primary",
+                      font=(FONT, 10, "bold"), bg=BG,
+                      command=create).pack(pady=12)
+        name_e.bind("<Return>", lambda e: create())
+
+    def _train_list_render(self, tw):
+        p = tw.get("project")
+        tw["list"].delete(0, "end")
+        if p is None:
+            return
+        for img in p.get("images") or []:
+            tw["list"].insert(
+                "end", os.path.basename(
+                    img.get("src") or "?"))
+        if 0 <= tw["sel"] < tw["list"].size():
+            tw["list"].selection_set(tw["sel"])
+
+    def _train_select(self, tw):
+        sel = tw["list"].curselection()
+        if not sel:
+            return
+        tw["sel"] = sel[0]
+        p = tw.get("project")
+        if p is None:
+            return
+        imgs = p.get("images") or []
+        if tw["sel"] < len(imgs):
+            tw["caption"].delete(0, "end")
+            tw["caption"].insert(
+                0, imgs[tw["sel"]].get("caption") or "")
+
+    def _train_cap_store(self, tw):
+        p = tw.get("project")
+        if p is None or tw.get("sel", -1) < 0:
+            return
+        imgs = p.get("images") or []
+        if tw["sel"] < len(imgs):
+            imgs[tw["sel"]]["caption"] = \
+                tw["caption"].get().strip()
+
+    def _train_add_files(self, tw):
+        if tw.get("project") is None:
+            tw["note"].configure(
+                text="Create a project first (New…).")
+            return
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(
+            parent=tw["win"], title="Add images",
+            filetypes=[("Images", "*.png *.jpg *.jpeg "
+                                   "*.webp *.bmp"),
+                       ("All files", "*.*")])
+        self._train_add_images(tw, [
+            {"src": pth, "caption": ""} for pth in paths])
+
+    def _train_add_gen(self, tw):
+        if tw.get("project") is None:
+            tw["note"].configure(
+                text="Create a project first (New…).")
+            return
+        recs = list_generations()
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL,
+                       fg=GREEN, bd=0,
+                       activebackground=ORANGE,
+                       activeforeground="#0a0f0a")
+        if not recs:
+            menu.add_command(
+                label="(no generations yet)",
+                state="disabled")
+        for rec in recs[:20]:
+            label = (rec.get("prompt") or rec["file"])[:44]
+            menu.add_command(
+                label=label,
+                command=lambda r=rec:
+                    self._train_add_images(tw, [{
+                        "src": os.path.join(
+                            IMG_DIR, r["file"]),
+                        "caption": r.get("prompt")
+                        or ""}]))
+        try:
+            menu.tk_popup(
+                tw["win"].winfo_pointerx(),
+                tw["win"].winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _train_add_images(self, tw, items):
+        p = tw.get("project")
+        if p is None:
+            return
+        have = {img.get("src")
+                for img in p.get("images") or []}
+        for it in items:
+            if it["src"] not in have:
+                p.setdefault("images", []).append(it)
+                have.add(it["src"])
+        save_train_project(p)
+        self._train_list_render(tw)
+        self._train_cmd_refresh(tw)
+
+    def _train_remove(self, tw):
+        p = tw.get("project")
+        if p is None or tw.get("sel", -1) < 0:
+            return
+        imgs = p.get("images") or []
+        if tw["sel"] < len(imgs):
+            imgs.pop(tw["sel"])
+        tw["sel"] = -1
+        tw["caption"].delete(0, "end")
+        save_train_project(p)
+        self._train_list_render(tw)
+        self._train_cmd_refresh(tw)
+
+    def _train_model_render(self, tw):
+        p = tw.get("project")
+        label = "(pick)"
+        if p is not None and p.get("model"):
+            label = img_pretty_name(
+                os.path.basename(p["model"]))
+            if not os.path.isfile(p["model"]):
+                label += " (missing)"
+        tw["model_btn"]._text = label
+        tw["model_btn"]._draw()
+
+    def _train_model_popup(self, tw):
+        entries = image_model_entries(
+            self.store.settings)
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL,
+                       fg=GREEN, bd=0,
+                       activebackground=ORANGE,
+                       activeforeground="#0a0f0a")
+        if not entries:
+            menu.add_command(label="(no checkpoints)",
+                             state="disabled")
+        for e in entries:
+            menu.add_command(
+                label=e["name"],
+                command=lambda ent=e:
+                    self._train_model_pick(tw, ent))
+        try:
+            menu.tk_popup(
+                tw["model_btn"].winfo_rootx(),
+                tw["model_btn"].winfo_rooty()
+                + tw["model_btn"].winfo_height())
+        finally:
+            menu.grab_release()
+
+    def _train_model_pick(self, tw, entry):
+        p = tw.get("project")
+        if p is None:
+            return
+        p["model"] = entry["path"]
+        save_train_project(p)
+        self._train_model_render(tw)
+        self._train_cmd_refresh(tw)
+
+    def _train_te_render(self, tw):
+        p = tw.get("project")
+        on = bool(p and p.get("train_te"))
+        tw["te_btn"]._text = ("Text encoder: ON" if on
+                              else "Text encoder: OFF")
+        tw["te_btn"]._draw()
+
+    def _train_te_toggle(self, tw):
+        p = tw.get("project")
+        if p is None:
+            return
+        p["train_te"] = not p.get("train_te")
+        save_train_project(p)
+        self._train_te_render(tw)
+        self._train_cmd_refresh(tw)
+
+    def _train_cmd_refresh(self, tw):
+        p = tw.get("project")
+        if p is None:
+            tw["cmd_lbl"].configure(text="")
+            return
+        snap = dict(p)
+        snap["trigger"] = tw["trigger"].get().strip()
+        for key in ("dim", "alpha", "epochs"):
+            try:
+                snap[key] = int(tw["fields"][key].get())
+            except (ValueError, TypeError):
+                pass
+        snap["lr"] = tw["fields"]["lr"].get().strip() \
+            or snap.get("lr") or "1e-4"
+        args = build_train_args(
+            snap, "<dataset>",
+            os.path.join(TRAIN_DIR, snap["slug"],
+                         "output"))
+        tw["cmd_lbl"].configure(
+            text="train_network.py " + " ".join(args))
+
+    def _train_bar(self, tw, frac):
+        c = tw["bar"]
+        w = max(10, c.winfo_width())
+        c.delete("all")
+        c.create_rectangle(1, 1, w - 1, 7,
+                           outline=BORDER, fill=PANEL2)
+        fw = int((w - 2) * max(0.0, min(1.0, frac)))
+        if fw > 0:
+            c.create_rectangle(1, 1, fw, 7, outline="",
+                               fill=ORANGE)
+
+    def _train_start(self, tw):
+        if self._train_job is not None:
+            return
+        if not trainer_ready():
+            tw["note"].configure(
+                text="Install the trainer first - it "
+                     "is the button at the top.")
+            return
+        p = self._train_collect(tw)
+        if p is None:
+            tw["note"].configure(
+                text="Create a project first (New…).")
+            return
+        imgs = [i for i in p.get("images") or []
+                if os.path.isfile(i.get("src") or "")]
+        if not imgs:
+            tw["note"].configure(
+                text="The dataset is empty - add at "
+                     "least a few images.")
+            return
+        if not p.get("model") or not os.path.isfile(
+                p["model"]):
+            tw["note"].configure(
+                text="Pick a base model checkpoint "
+                     "first.")
+            return
+        dataset = build_train_dataset(p)
+        out_dir = os.path.join(TRAIN_DIR, p["slug"],
+                               "output")
+        os.makedirs(out_dir, exist_ok=True)
+        args = build_train_args(p, dataset, out_dir)
+        job = {"args": args, "out_dir": out_dir,
+               "slug": p["slug"], "frac": 0.0,
+               "last_status": "", "last_log": "",
+               "cancelled": False, "proc": None}
+        self._train_job = job
+        tw["train_btn"].set_enabled(False)
+        tw["cancel_btn"].set_enabled(True)
+        tw["status_lbl"].configure(text="Training…")
+        tw["note"].configure(
+            text="CPU training is slow - a small "
+                 "dataset still takes a while. The "
+                 "LoRA lands in your LoRAs when it "
+                 "finishes.")
+
+        def emit(kind, payload):
+            self.events.put(("train_" + kind, payload))
+
+        def work():
+            run_training(job, emit)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _train_cancel(self, tw):
+        job = self._train_job
+        if job is None:
+            return
+        job["cancelled"] = True
+        proc = job.get("proc")
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        tw["status_lbl"].configure(text="Cancelling…")
+
+    def _train_finish(self, payload):
+        ok, info = payload
+        self._train_job = None
+        tw = self._train_win
+        if tw is not None:
+            tw["train_btn"].set_enabled(True)
+            tw["cancel_btn"].set_enabled(False)
+        if ok:
+            self._img_refresh_models()
+            if tw is not None:
+                tw["status_lbl"].configure(
+                    text="Done - the LoRA is in your "
+                         "LoRAs.")
+                tw["note"].configure(
+                    text="Saved as %s - pick it in the "
+                         "image studio with LoRA "
+                         "Insert… (tag: <lora:%s:0.8>)"
+                         % (os.path.basename(info),
+                            os.path.splitext(
+                                os.path.basename(info))[0]))
+                self._train_bar(tw, 1.0)
+        else:
+            if tw is not None:
+                tw["status_lbl"].configure(
+                    text="Training stopped: " + info)
+                if info != "cancelled":
+                    tw["note"].configure(
+                        text="The trainer's own words "
+                             "are on the log line above; "
+                             "the Error Log has more.")
+
     # ---- README window ----------------------------------
     # Menu → README…: the manual, inside the app. The
     # checkout's copy wins (it matches the installed
@@ -8885,6 +9589,324 @@ def report_context():
     osname = {"win32": "Windows",
               "darwin": "macOS"}.get(sys.platform, "Linux")
     return user, host, osname
+
+
+# ---- LoRA training (kohya sd-scripts, CPU-capable) --
+# The trainer installs on demand into DATA_DIR/trainer:
+# a pinned sd-scripts release + a venv with CPU torch.
+# Nexus Gate itself never trains; it builds the dataset
+# (kohya folder layout), shows the exact command, runs
+# it, and files the result with the other LoRAs.
+SD_SCRIPTS_TAG = "v0.13.0"
+SD_SCRIPTS_URL = ("https://github.com/kohya-ss/"
+                  "sd-scripts/archive/refs/tags/"
+                  + SD_SCRIPTS_TAG + ".zip")
+TRAIN_DIR = os.path.join(DATA_DIR, "lora-training")
+TRAINER_DIR = os.environ.get(
+    "NEXUS_TRAINER_DIR", os.path.join(DATA_DIR, "trainer"))
+
+
+def trainer_python():
+    if IS_WINDOWS:
+        return os.path.join(TRAINER_DIR, "venv", "Scripts",
+                            "python.exe")
+    return os.path.join(TRAINER_DIR, "venv", "bin",
+                        "python")
+
+
+def trainer_script():
+    return os.path.join(TRAINER_DIR, "sd-scripts",
+                        "train_network.py")
+
+
+def trainer_ready():
+    return (os.path.isfile(trainer_python())
+            and os.path.isfile(trainer_script()))
+
+
+def _run_logged(cmd, emit, cwd=None):
+    """Run a command, streaming merged output lines to
+    emit(kind, line); returns the exit code."""
+    emit("log", "+ " + os.path.basename(cmd[0]) + " "
+         + " ".join(cmd[1:]))
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True,
+        errors="replace", cwd=cwd,
+        creationflags=CREATE_NO_WINDOW)
+    for line in proc.stdout:
+        emit("log", line.rstrip())
+    proc.wait()
+    return proc.returncode
+
+
+def install_trainer(emit):
+    """emit(kind, payload): ("log", line) then
+    ("done", ok). Mirrors the verified install recipe:
+    release zip, venv, CPU torch first, requirements
+    (with a bitsandbytes-free retry - it only serves
+    8-bit optimizers, which training here never uses)."""
+    try:
+        os.makedirs(TRAINER_DIR, exist_ok=True)
+        sd_dir = os.path.join(TRAINER_DIR, "sd-scripts")
+        if not os.path.isdir(sd_dir):
+            emit("log", "Downloading sd-scripts "
+                        + SD_SCRIPTS_TAG + "…")
+            zip_path = os.path.join(TRAINER_DIR,
+                                    "sd-scripts.zip")
+            req = urllib.request.Request(
+                SD_SCRIPTS_URL,
+                headers={"User-Agent": "Nexus-Gate"})
+            with urllib.request.urlopen(
+                    req, timeout=120) as r, \
+                    open(zip_path, "wb") as f:
+                shutil.copyfileobj(r, f)
+            import zipfile
+            with zipfile.ZipFile(zip_path) as z:
+                z.extractall(TRAINER_DIR)
+            os.rename(os.path.join(
+                TRAINER_DIR,
+                "sd-scripts-" + SD_SCRIPTS_TAG[1:]), sd_dir)
+            os.remove(zip_path)
+        py = trainer_python()
+        if not os.path.isfile(py):
+            emit("log", "Creating the trainer's Python "
+                        "environment…")
+            if _run_logged([sys.executable, "-m", "venv",
+                            os.path.join(TRAINER_DIR,
+                                         "venv")],
+                           emit) != 0:
+                emit("done", False)
+                return
+        _run_logged([py, "-m", "pip", "install",
+                     "--upgrade", "pip"], emit)
+        emit("log", "Installing PyTorch (CPU build)…")
+        _run_logged([py, "-m", "pip", "install", "torch",
+                     "torchvision", "--index-url",
+                     "https://download.pytorch.org/whl/cpu"],
+                    emit)
+        req_path = os.path.join(sd_dir,
+                                "requirements.txt")
+        emit("log", "Installing the trainer's "
+                    "requirements…")
+        # cwd matters: the requirements end in "-e .",
+        # an editable install of sd-scripts itself,
+        # and pip resolves "." against the cwd.
+        rc = _run_logged([py, "-m", "pip", "install",
+                          "-r", req_path], emit,
+                         cwd=sd_dir)
+        if rc != 0:
+            emit("log", "That pass failed - retrying "
+                        "without bitsandbytes (only used "
+                        "by 8-bit optimizers)…")
+            lines = [l for l in open(req_path).read()
+                     .splitlines()
+                     if not l.strip().startswith(
+                         "bitsandbytes")]
+            alt = os.path.join(TRAINER_DIR,
+                               "requirements-nobnb.txt")
+            with open(alt, "w") as f:
+                f.write("\n".join(lines))
+            rc = _run_logged([py, "-m", "pip", "install",
+                              "-r", alt], emit,
+                             cwd=sd_dir)
+        ok = rc == 0 and trainer_ready()
+        if ok:
+            _run_logged([py, "-c",
+                         "import torch; print('torch', "
+                         "torch.__version__)"],
+                        emit)
+        emit("done", ok)
+    except Exception:
+        log("trainer install failed:\n"
+            + traceback.format_exc())
+        emit("log", "Install failed - see the Error Log.")
+        emit("done", False)
+
+
+def train_project_slugs():
+    out = []
+    if os.path.isdir(TRAIN_DIR):
+        for name in sorted(os.listdir(TRAIN_DIR)):
+            if os.path.isfile(os.path.join(
+                    TRAIN_DIR, name, "project.json")):
+                out.append(name)
+    return out
+
+
+def load_train_project(slug):
+    try:
+        with open(os.path.join(TRAIN_DIR, slug,
+                               "project.json"),
+                  encoding="utf-8") as f:
+            p = json.load(f)
+    except (OSError, ValueError):
+        return None
+    p["slug"] = slug
+    return p
+
+
+def save_train_project(p):
+    d = os.path.join(TRAIN_DIR, p["slug"])
+    os.makedirs(d, exist_ok=True)
+    tmp = dict(p)
+    tmp.pop("slug", None)
+    with open(os.path.join(d, "project.json"), "w",
+              encoding="utf-8") as f:
+        json.dump(tmp, f, indent=1)
+
+
+def new_train_project(name):
+    slug = re.sub(r"[^a-z0-9]+", "-",
+                  name.lower()).strip("-") or "lora"
+    base, n = slug, 2
+    while os.path.exists(os.path.join(TRAIN_DIR, slug)):
+        slug = "%s-%d" % (base, n)
+        n += 1
+    p = {"slug": slug, "name": name, "trigger": "",
+         "repeats": 10, "images": [], "model": "",
+         "dim": 16, "alpha": 8, "lr": "1e-4",
+         "epochs": 10, "train_te": False}
+    save_train_project(p)
+    return p
+
+
+def build_train_dataset(p):
+    """Write the kohya folder layout for a project:
+    dataset/<repeats>_<slug>/imgNNN.ext + imgNNN.txt.
+    Returns the dataset dir. Images are copied fresh
+    every run, so the dataset always matches the
+    project."""
+    root = os.path.join(TRAIN_DIR, p["slug"], "dataset")
+    if os.path.isdir(root):
+        shutil.rmtree(root)
+    sub = os.path.join(root, "%d_%s" % (
+        max(1, int(p.get("repeats") or 10)), p["slug"]))
+    os.makedirs(sub)
+    for i, img in enumerate(p.get("images") or []):
+        src = img.get("src") or ""
+        if not os.path.isfile(src):
+            continue
+        ext = os.path.splitext(src)[1].lower() or ".png"
+        stem = "img%03d" % (i + 1)
+        shutil.copyfile(src, os.path.join(sub,
+                                          stem + ext))
+        cap = (img.get("caption") or "").strip()
+        trig = (p.get("trigger") or "").strip()
+        full = ", ".join(x for x in (trig, cap) if x)
+        with open(os.path.join(sub, stem + ".txt"), "w",
+                  encoding="utf-8") as f:
+            f.write(full)
+    return root
+
+
+def build_train_args(p, dataset_dir, out_dir):
+    args = [
+        "--pretrained_model_name_or_path",
+        p.get("model") or "",
+        "--train_data_dir", dataset_dir,
+        "--output_dir", out_dir,
+        "--output_name", p["slug"],
+        "--resolution", "512,512",
+        "--network_module", "networks.lora",
+        "--network_dim", str(int(p.get("dim") or 16)),
+        "--network_alpha", str(int(p.get("alpha") or 8)),
+        "--learning_rate", str(p.get("lr") or "1e-4"),
+        "--train_batch_size", "1",
+        "--num_train_epochs", str(int(
+            p.get("epochs") or 10)),
+        "--save_every_n_epochs", "1",
+        "--mixed_precision", "no",
+        "--cache_latents",
+        "--optimizer_type", "adamw_torch",
+        "--lr_scheduler", "cosine",
+        "--save_model_as", "safetensors",
+        "--seed", "42",
+    ]
+    if p.get("train_te"):
+        args += ["--text_encoder_lr", "5e-5"]
+    else:
+        args += ["--network_train_unet_only"]
+    return args
+
+
+_STEPBAR_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\[")
+_EPOCH_RE = re.compile(r"epoch\s+(\d+)\s*/\s*(\d+)",
+                       re.I)
+
+
+def run_training(job, emit):
+    """emit(kind, payload): ("log", line),
+    ("step", (frac, text)), ("done", (ok, info))."""
+    try:
+        proc = subprocess.Popen(
+            [trainer_python(), trainer_script()]
+            + job["args"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True,
+            errors="replace",
+            cwd=os.path.join(TRAINER_DIR, "sd-scripts"),
+            creationflags=CREATE_NO_WINDOW)
+        job["proc"] = proc
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            emit("log", line)
+            mb = _STEPBAR_RE.search(line)
+            if mb:
+                cur, tot = int(mb.group(1)), int(
+                    mb.group(2))
+                if tot:
+                    emit("step", (cur / tot,
+                                  "Step %d of %d"
+                                  % (cur, tot)))
+                continue
+            me = _EPOCH_RE.search(line)
+            if me:
+                emit("step", (None, "Epoch %s of %s"
+                              % (me.group(1),
+                                 me.group(2))))
+        proc.wait()
+        if job.get("cancelled"):
+            emit("done", (False, "cancelled"))
+            return
+        if proc.returncode != 0:
+            emit("done", (False,
+                          "trainer exited with code %s"
+                          % proc.returncode))
+            return
+        outs = []
+        out_dir = job["out_dir"]
+        if os.path.isdir(out_dir):
+            for name in os.listdir(out_dir):
+                if name.endswith(".safetensors"):
+                    fp = os.path.join(out_dir, name)
+                    outs.append((os.path.getmtime(fp), fp))
+        if not outs:
+            emit("done", (False,
+                          "training finished but no "
+                          ".safetensors came out"))
+            return
+        outs.sort()
+        final = outs[-1][1]
+        os.makedirs(IMG_LORA_DIR, exist_ok=True)
+        dest = os.path.join(IMG_LORA_DIR,
+                            job["slug"] + ".safetensors")
+        n = 2
+        while os.path.exists(dest):
+            dest = os.path.join(
+                IMG_LORA_DIR,
+                "%s-%d.safetensors" % (job["slug"], n))
+            n += 1
+        shutil.copyfile(final, dest)
+        emit("done", (True, dest))
+    except Exception:
+        log("training run failed:\n"
+            + traceback.format_exc())
+        emit("done", (False,
+                      "the run crashed - see the "
+                      "Error Log"))
 
 
 def local_readme():

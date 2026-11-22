@@ -1,8 +1,8 @@
 # Nexus Gate
 
-<!-- README-STATUS: matches Nexus Gate v1.38.0 -->
+<!-- README-STATUS: matches Nexus Gate v1.39.0 -->
 
-**README status: current as of Nexus Gate v1.38.0.**
+**README status: current as of Nexus Gate v1.39.0.**
 The app's header shows its version; if it shows a newer one than
 this line, this README has fallen behind and needs a catch-up —
 [CHANGELOG.md](CHANGELOG.md) is always current.
@@ -53,6 +53,19 @@ machine — no accounts, no cloud, nothing leaves the machine.
   mouse wheel zoom the picture (drag to pan when zoomed
   in), and the fit re-runs live as the window settles or
   resizes.
+- **LoRA training.** Menu → Train a LoRA… builds the
+  dataset and runs the training: add images from files
+  or straight from your generations (their prompts
+  arrive as captions), edit captions, set a trigger
+  word and repeats, pick the base checkpoint, rank,
+  learning rate and epochs. The trainer is kohya's
+  sd-scripts in its own venv with a CPU build of
+  PyTorch — it installs on demand (~1 GB, once) and
+  trains on CPU anywhere, no GPU required. The exact
+  command is shown before it runs, progress streams
+  live, and the finished LoRA lands in your LoRAs,
+  ready to use. Projects live in the data dir's
+  `lora-training/` folder.
 - **Thinking traces, when the model thinks.** Qwen3 replies carry
   a saved thinking trace, shown as a collapsible **▸ Thinking**
   block — click to read exactly how the model reasoned, click
@@ -137,8 +150,8 @@ machine — no accounts, no cloud, nothing leaves the machine.
   never touches the original file.
 - **One Menu, thinking levels.** The header's **Menu** button
   holds the windows (System, Memory, Knowledge Bases, Ollama,
-  Model Manager, Image Models, Error Log, README,
-  Make a Report), Settings (frame,
+  Model Manager, Image Models, Train a LoRA, Error Log,
+  README, Make a Report), Settings (frame,
   content opacity, update checks, context size), Update,
   and a **thinking level** setting remembered per model —
   low / medium / high for gpt-oss, off / on for Qwen3-class
