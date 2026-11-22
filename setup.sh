@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nexus Chat - FULL setup, start to finish, in one run.
+# Nexus Gate - FULL setup, start to finish, in one run.
 #
 #   0. Code          git pull (fast-forward) if this is a checkout,
 #                    then the NEW script re-runs itself - so this
@@ -93,7 +93,7 @@ for m in $MODELS; do
 done
 
 # ---- 4. The app --------------------------------------------------------
-say "Step 4/4: Nexus Chat app"
+say "Step 4/4: Nexus Gate app"
 bash "$SRC/install.sh" || die "install.sh failed - scroll up for its error"
 
 # ---- verify -------------------------------------------------------------
@@ -104,4 +104,4 @@ for m in $MODELS; do
   printf '%s\n' "$final" | grep -qx "$m" || die "model $m missing at final check"
 done
 [ -f "$HOME/Desktop/nexus-chat.desktop" ] || die "desktop icon missing at final check"
-printf '\n[setup] ALL DONE. Nexus Chat is ready - click its icon on the desktop.\n'
+printf '\n[setup] ALL DONE. Nexus Gate is ready - click its icon on the desktop.\n'

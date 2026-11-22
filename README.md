@@ -1,4 +1,4 @@
-# Nexus Chat
+# Nexus Gate
 
 A local AI chat desktop app for the Raspberry Pi 5. Black, green and
 orange. It talks to [Ollama](https://ollama.com) running on the same
@@ -100,12 +100,12 @@ bash setup.sh
 ```
 
 (`install.sh` on its own just reinstalls the app and its desktop
-icon.) Then click the **Nexus Chat** icon on the desktop.
+icon.) Then click the **Nexus Gate** icon on the desktop.
 
 ## Setup on Windows
 
 **From scratch:** download
-**`Nexus_Chat_Installer_Windows.bat`** from this repo and
+**`Nexus_Gate_Installer_Windows.bat`** from this repo and
 double-click it. It installs Python 3, Git and
 Ollama if they're missing, clones this repo to
 `%USERPROFILE%\Nexus-Chat`, then runs setup and launches the
@@ -116,7 +116,7 @@ python.org installer includes it). Clone this repo, then
 double-click **`setup.bat`**:
 it installs Ollama if it's missing (the official installer, which
 you click through once), starts it, pulls the models, installs
-the app to `%LOCALAPPDATA%\NexusChat`, and puts a **Nexus Chat**
+the app to `%LOCALAPPDATA%\NexusChat`, and puts a **Nexus Gate**
 shortcut on the desktop. `install.bat` reinstalls just the app.
 The Ollama controller works there too — Start launches Ollama,
 Stop kills it and frees all its RAM.
@@ -128,7 +128,7 @@ title, and **every shipped change bumps it** — a feature bumps
 the middle number (1.1.0), a fix bumps the last (1.0.1). The
 full history is in [CHANGELOG.md](CHANGELOG.md).
 
-The header Menu's **Update Nexus Chat…** entry does it from
+The header Menu's **Update Nexus Gate…** entry does it from
 inside the app: it runs setup in your git checkout (which
 pulls the latest code first), streams the output into a
 window, and offers a Relaunch when it's done. No terminal

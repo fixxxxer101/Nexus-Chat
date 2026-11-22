@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nexus Chat setup for Windows - the worker behind setup.bat.
+"""Nexus Gate setup for Windows - the worker behind setup.bat.
 
 Does everything, skipping whatever is already done:
   0. git pull this checkout (so setup itself is current)
@@ -160,7 +160,7 @@ def pull_models(exe):
 
 def make_shortcut():
     desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-    lnk = os.path.join(desktop, "Nexus Chat.lnk")
+    lnk = os.path.join(desktop, "Nexus Gate.lnk")
     pyw = os.path.join(os.path.dirname(sys.executable),
                        "pythonw.exe")
     target = pyw if os.path.isfile(pyw) else sys.executable
@@ -182,6 +182,16 @@ def make_shortcut():
                        capture_output=True, text=True, timeout=30)
     if r.returncode == 0:
         say("Desktop shortcut installed: %s" % lnk)
+        # the app was renamed Nexus Chat -> Nexus Gate:
+        # take the old-named shortcut away so the desktop
+        # does not end up with both
+        legacy = os.path.join(desktop, "Nexus Chat.lnk")
+        try:
+            if os.path.isfile(legacy):
+                os.remove(legacy)
+                say("Removed the old Nexus Chat shortcut.")
+        except OSError:
+            pass
         return True
     say("Shortcut creation failed: %s"
         % (r.stderr or r.stdout or "").strip())
@@ -214,7 +224,7 @@ def install_app():
 def main():
     app_only = "--app-only" in sys.argv
     in_app = "--no-pause" in sys.argv
-    say("Nexus Chat setup (Windows) - checkout: %s" % HERE)
+    say("Nexus Gate setup (Windows) - checkout: %s" % HERE)
     self_update(in_app)
     if not app_only:
         exe, ok = ensure_ollama()
@@ -225,7 +235,7 @@ def main():
         if not pull_models(exe):
             return 1
     install_app()
-    say("Done. Double-click the Nexus Chat icon on the desktop.")
+    say("Done. Double-click the Nexus Gate icon on the desktop.")
     return 0
 
 

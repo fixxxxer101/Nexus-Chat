@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nexus Chat - a local AI chat desktop app. Built for Clint's
+"""Nexus Gate - a local AI chat desktop app. Built for Clint's
 Raspberry Pi 5, runs on any Linux PC, and on Windows too.
 
 Talks to Ollama running on the same machine (Qwen3 by default).
@@ -68,7 +68,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
-APP_NAME = "Nexus Chat"
+APP_NAME = "Nexus Gate"
 # The version, shown in the header and the window title. Bump it
 # in the SAME commit as every change, no exceptions: a feature
 # bumps the middle number (1.1.0), a fix bumps the last (1.0.1),
@@ -76,7 +76,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.25.1"
+VERSION = "1.26.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -92,7 +92,7 @@ OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
 VERSION_URL = os.environ.get(
     "NEXUS_VERSION_URL",
     "https://raw.githubusercontent.com/fixxxxer101/"
-    "Nexus-Chat/main/nexus-chat.py")
+    "Nexus-Gate/main/nexus-chat.py")
 HF_API = os.environ.get("NEXUS_HF", "https://huggingface.co")
 if IS_WINDOWS:
     _app_home = os.path.join(
@@ -265,7 +265,7 @@ RADIUS_CARD = 18      # header / sidebar / bottom bar cards
 RADIUS_PANEL = 14     # text and list panels inside windows
 
 SYSTEM_PROMPT = (
-    "You are the assistant inside Nexus Chat, a private local chat "
+    "You are the assistant inside Nexus Gate, a private local chat "
     "app designed to run on a Raspberry Pi 5 and beyond. Be direct, "
     "accurate and concise unless asked for depth. Everything here is "
     "offline and private."
@@ -277,7 +277,7 @@ SYSTEM_PROMPT = (
 # same name shadows the built-in (deleting it un-shadows).
 BUILTIN_PRESETS = [
     {"name": "Deep Thinker",
-     "text": "You are the assistant inside Nexus Chat, a private "
+     "text": "You are the assistant inside Nexus Gate, a private "
              "local chat app. Think carefully before answering: "
              "work through the problem step by step, weigh the "
              "alternatives, check your own reasoning for errors, "
@@ -285,14 +285,14 @@ BUILTIN_PRESETS = [
              "depth and correctness over speed. Everything here "
              "is offline and private."},
     {"name": "Creative Partner",
-     "text": "You are the assistant inside Nexus Chat, a private "
+     "text": "You are the assistant inside Nexus Gate, a private "
              "local chat app. Be a creative partner: brainstorm "
              "freely, offer several ideas instead of one, build "
              "on the user's ideas and keep the tone playful and "
              "encouraging. Wild ideas are welcome - polish comes "
              "later. Everything here is offline and private."},
     {"name": "Code Mentor",
-     "text": "You are the assistant inside Nexus Chat, a private "
+     "text": "You are the assistant inside Nexus Gate, a private "
              "local chat app. Act as a senior programming mentor: "
              "give working code first, then explain how it works "
              "and why. Point out pitfalls, edge cases and better "
@@ -443,7 +443,7 @@ def fetch_latest_version():
     answer, no alarm."""
     try:
         req = urllib.request.Request(
-            VERSION_URL, headers={"User-Agent": "Nexus-Chat"})
+            VERSION_URL, headers={"User-Agent": "Nexus-Gate"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = resp.read(65536).decode("utf-8", "replace")
         m = re.search(r'^VERSION\s*=\s*"([^"]+)"', data, re.M)
@@ -1316,7 +1316,7 @@ def register_local_model(store, paths, name):
                         "store: %s. A hardlink or symlink is "
                         "impossible there (a different drive, "
                         "or a FAT/exFAT filesystem), and the "
-                        "model was NOT copied - Nexus Chat "
+                        "model was NOT copied - Nexus Gate "
                         "never duplicates model files."
                         % (path, e)), None
         layers.append({
@@ -2145,7 +2145,7 @@ class App:
         self._frame_widgets.append(head)
         head.pack(side="top", fill="x", padx=10, pady=(10, 2))
         head.pack_propagate(False)
-        tk.Label(head, text="NEXUS CHAT", bg=PANEL, fg=GREEN,
+        tk.Label(head, text="NEXUS GATE", bg=PANEL, fg=GREEN,
                  font=(FONT, 14, "bold")).pack(side="left",
                                                padx=(16, 6))
         self.version_lbl = tk.Label(head, text="v" + VERSION,
@@ -2565,7 +2565,7 @@ class App:
         menu.add_command(label="Knowledge Bases…",
                          command=self.open_kbases)
         menu.add_separator()
-        menu.add_command(label="Update Nexus Chat…",
+        menu.add_command(label="Update Nexus Gate…",
                          command=self.open_update)
         x = self.menu_btn.winfo_rootx()
         y = (self.menu_btn.winfo_rooty() +
@@ -4487,7 +4487,7 @@ class App:
                  "limit": "20"})
             req = urllib.request.Request(
                 HF_API + "/api/models?" + qs,
-                headers={"User-Agent": "NexusChat"})
+                headers={"User-Agent": "NexusGate"})
             with urllib.request.urlopen(req, timeout=30) as r:
                 repos = json.loads(r.read().decode("utf-8"))
 
@@ -4498,7 +4498,7 @@ class App:
                          + urllib.parse.quote(rid, safe="/")
                          + "/tree/main")
                     rq = urllib.request.Request(
-                        u, headers={"User-Agent": "NexusChat"})
+                        u, headers={"User-Agent": "NexusGate"})
                     with urllib.request.urlopen(rq,
                                                 timeout=30) as r:
                         files = json.loads(
@@ -4961,13 +4961,13 @@ class App:
                 self._upd = None
         win = tk.Toplevel(self.root)
         style_window(win)
-        win.title("Update Nexus Chat")
+        win.title("Update Nexus Gate")
         win.geometry("580x470")
         win.configure(bg=BG)
         upd = {"win": win, "queue": queue.Queue(), "running": False,
                "ok": False, "drain_id": None}
         self._upd = upd
-        tk.Label(win, text="UPDATE NEXUS CHAT", bg=BG, fg=GREEN,
+        tk.Label(win, text="UPDATE NEXUS GATE", bg=BG, fg=GREEN,
                  font=(FONT, 12, "bold")).pack(anchor="w", padx=12,
                                                pady=(12, 2))
         tk.Label(win, text="Installed version: v%s" % VERSION,
@@ -5134,7 +5134,7 @@ class App:
 
     # ---- memory window -------------------------------------------------
     # ---- Ollama controller panel --------------------------------
-    # A window inside Nexus Chat (the header's Ollama button): live
+    # A window inside Nexus Gate (the header's Ollama button): live
     # service status, the loaded model and the RAM it holds, and
     # Start / Stop / Unload controls. Stop frees ALL the RAM Ollama
     # holds; Unload frees just the model's.
@@ -5366,7 +5366,7 @@ class App:
         tk = self.tk
         win = tk.Toplevel(self.root)
         style_window(win)
-        win.title("Nexus Chat — Memory")
+        win.title("Nexus Gate — Memory")
         win.geometry("560x520")
         win.configure(bg=BG)
         store = self.store
@@ -5516,7 +5516,7 @@ def acquire_lock(path):
 
 
 def find_repo():
-    """The Nexus Chat git checkout on this machine, if any: the
+    """The Nexus Gate git checkout on this machine, if any: the
     NEXUS_REPO override, the path the installer recorded in
     DATA_DIR/repo.txt, or the conventional ~/Nexus-Chat clone."""
     cands = []
@@ -5563,7 +5563,7 @@ def main():
     lock_path = os.path.join(DATA_DIR, ".lock")
     lock_file = acquire_lock(lock_path)
     if lock_file is None:
-        print("Nexus Chat is already running.")
+        print("Nexus Gate is already running.")
         return
     import tkinter as tk
     root = tk.Tk()

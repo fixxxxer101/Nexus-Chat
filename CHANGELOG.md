@@ -5,6 +5,20 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.26.0 — 2026-11-21
+Renamed: Nexus Chat is now Nexus Gate, matching the
+renamed GitHub repository. The header, window
+titles, menus, installer and shortcuts all carry the
+new name, the self-update check reads from the
+Nexus-Gate repository, and the Windows setup removes
+the old Nexus Chat desktop shortcut when it installs
+the Nexus Gate one. Nothing else moves: the app
+file, the data folders and every chat, setting and
+knowledge base stay exactly where they were, so the
+rename costs nobody their history. (Earlier entries
+in this changelog keep the old name - they describe
+what the app was called then.)
+
 ## 1.25.1 — 2026-11-21
 The Knowledge Bases window no longer has a "Get
 embedding model" button. Since the model is a

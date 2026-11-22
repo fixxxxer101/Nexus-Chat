@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Draw the Nexus Chat icon: a black tile, a green chat bubble,
+"""Draw the Nexus Gate icon: a black tile, a green chat bubble,
 two green dots and one orange dot. Pure stdlib (no PIL) so it runs
 anywhere Python 3 does - install.sh uses it to render the icon
 locally instead of shipping a binary.
 
 Usage: python3 make_icon.py [chat|power] [output.png]
-Two styles: "chat" (the Nexus Chat bubble) and "power" (the
+Two styles: "chat" (the Nexus Gate bubble) and "power" (the
 Ollama Controller power symbol). Default: chat, icon.png.
 Drawn at 1024, box-downsampled to 512 for smooth edges.
 An output name ending in .ico writes a Windows icon instead

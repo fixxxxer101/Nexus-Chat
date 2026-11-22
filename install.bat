@@ -1,5 +1,5 @@
 @echo off
-rem Nexus Chat app-only reinstall for Windows - double-click me.
+rem Nexus Gate app-only reinstall for Windows - double-click me.
 rem Skips Ollama and the models; just reinstalls the app itself.
 cd /d %~dp0
 where py >nul 2>nul

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Nexus Chat installer: a desktop app you click to run.
+# Nexus Gate installer: a desktop app you click to run.
 #
 #   - app        -> ~/.local/bin/nexus-chat.py
 #   - icon       -> ~/.local/share/icons/nexus-chat.png, drawn on
@@ -10,10 +10,10 @@
 #                   marked TRUSTED so the desktop opens them with no
 #                   "how do you want to open this?" prompt
 #
-# No autostart: Nexus Chat opens when you click it, like any app.
+# No autostart: Nexus Gate opens when you click it, like any app.
 # It needs Ollama running with a model pulled (see README.md) -
 # setup.sh handles the whole stack. The Ollama controller lives
-# INSIDE Nexus Chat (the header's Ollama button) - status, Start /
+# INSIDE Nexus Gate (the header's Ollama button) - status, Start /
 # Stop / Unload, so the service can be halted when its RAM is
 # wanted back.
 # Safe to re-run: files are replaced.
@@ -39,7 +39,7 @@ fi
 cat > "$APP_DIR/nexus-chat.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Nexus Chat
+Name=Nexus Gate
 Comment=Local AI chat (Ollama/Qwen3) with memory - nothing leaves this Pi
 Exec=python3 $BIN/nexus-chat.py
 $ICON_LINE
@@ -51,7 +51,7 @@ chmod +x "$APP_DIR/nexus-chat.desktop" "$DESKTOP_DIR/nexus-chat.desktop"
 echo "installed desktop shortcut $DESKTOP_DIR/nexus-chat.desktop"
 
 # The controller briefly shipped as a standalone app; it now
-# lives inside Nexus Chat. Remove the standalone install so there
+# lives inside Nexus Gate. Remove the standalone install so there
 # is exactly one controller.
 rm -f "$BIN/ollama-controller.py" \
       "$APP_DIR/ollama-controller.desktop" \
@@ -72,5 +72,5 @@ if command -v gio >/dev/null 2>&1; then
   gio set "$APP_DIR/nexus-chat.desktop" metadata::trusted true 2>/dev/null || true
   echo "marked shortcut trusted (opens with no prompt)"
 fi
-echo "done. Click the Nexus Chat icon on the desktop to run it;"
+echo "done. Click the Nexus Gate icon on the desktop to run it;"
 echo "the Ollama button in its header opens the controller."

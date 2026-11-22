@@ -1,5 +1,5 @@
 @echo off
-rem Nexus Chat setup for Windows - double-click me.
+rem Nexus Gate setup for Windows - double-click me.
 rem Everything happens in setup_win.py; this just finds Python.
 cd /d %~dp0
 where py >nul 2>nul
