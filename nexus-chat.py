@@ -64,7 +64,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.11.0"
+VERSION = "1.12.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -945,7 +945,8 @@ class App:
         self._at_bottom = True
         self._ctl = None               # Ollama controller panel state
         self._upd = None               # Update window state
-        self._mdl = None               # Download Models window state
+        self._mdl = None               # Model Manager window state
+        self._pull = None              # in-flight model download
 
         root.title("%s v%s" % (APP_NAME, VERSION))
         root.geometry("1040x700")
@@ -1616,6 +1617,18 @@ class App:
                     self.status.configure(text=text, fg=GREEN_DIM)
                 elif kind == "models":
                     self._on_models(text)
+                elif kind == "pull_done":
+                    self._pull = None
+                    if self._mdl is not None:
+                        self._mdl["queue"].put(("done", text))
+                elif kind == "pull_error":
+                    self._pull = None
+                    if self._mdl is not None:
+                        self._mdl["queue"].put(("error", text))
+                elif kind == "pull_cancelled":
+                    self._pull = None
+                    if self._mdl is not None:
+                        self._mdl["queue"].put(("cancelled", text))
         except queue.Empty:
             pass
         self.root.after(60, self._drain)
@@ -1867,12 +1880,9 @@ class App:
         if self._mdl is not mdl:
             return
         self._mdl = None
-        mdl["cancelled"] = True
-        if mdl.get("resp") is not None:
-            try:
-                mdl["resp"].close()
-            except Exception:
-                pass
+        # A running download is NOT cancelled: it lives on the
+        # app (self._pull), keeps going with this window closed,
+        # and shows up mid-flight when the manager reopens.
         if mdl.get("drain_id"):
             try:
                 self.root.after_cancel(mdl["drain_id"])
@@ -1986,30 +1996,40 @@ class App:
             row["btn"].set_enabled(False)
 
     def _mdl_click(self, mdl, row):
-        if mdl["busy"] is row:
-            mdl["cancelled"] = True
-            if mdl.get("resp") is not None:
+        if mdl["busy"] is row and self._pull is not None:
+            self._pull["cancelled"] = True
+            if self._pull.get("resp") is not None:
                 try:
-                    mdl["resp"].close()
+                    self._pull["resp"].close()
                 except Exception:
                     pass
             row["status"].configure(text="Cancelling...")
             return
-        if mdl["busy"] is not None or row["state"] != "ready":
+        if mdl["busy"] is not None or self._pull is not None \
+                or row["state"] != "ready":
             return
+        pull = {"tag": row["tag"], "resp": None,
+                "cancelled": False, "done": 0, "total": 0,
+                "status": "starting"}
+        self._pull = pull
         mdl["busy"] = row
-        mdl["cancelled"] = False
+        row["state"] = "busy"
         for r in mdl["rows"].values():
             if r is not row and r["state"] == "ready":
                 r["btn"].set_enabled(False)
         row["btn"].configure(text="Cancel")
         row["status"].configure(text="Starting...")
         mdl["note"].configure(text="Downloading %s..." % row["tag"])
-        threading.Thread(target=self._mdl_pull, args=(mdl, row),
+        threading.Thread(target=self._pull_worker, args=(pull,),
                          daemon=True).start()
 
-    def _mdl_pull(self, mdl, row):
-        tag = row["tag"]
+    def _pull_worker(self, pull):
+        # Runs on its own thread, owned by the APP, not by the
+        # Model Manager window: closing the window never touches
+        # it. Progress is written into the pull dict (the window
+        # renders from it when open); the end state goes through
+        # the app's event queue like everything else.
+        tag = pull["tag"]
         layers = {}
         try:
             req = urllib.request.Request(
@@ -2018,36 +2038,37 @@ class App:
                                  "stream": True}).encode("utf-8"),
                 headers={"Content-Type": "application/json"})
             resp = urllib.request.urlopen(req, timeout=1800)
-            mdl["resp"] = resp
+            pull["resp"] = resp
             try:
                 for raw in resp:
-                    if mdl["cancelled"]:
+                    if pull["cancelled"]:
                         break
                     line = raw.strip()
                     if not line:
                         continue
                     ev = json.loads(line.decode("utf-8"))
                     if ev.get("error"):
-                        mdl["queue"].put(
-                            ("error", (tag, str(ev["error"]))))
+                        self.events.put(
+                            ("pull_error",
+                             (tag, str(ev["error"]))))
                         return
                     d = ev.get("digest")
                     if d and ev.get("total"):
                         layers[d] = (ev.get("completed", 0),
                                      ev["total"])
-                    done = sum(c for c, _ in layers.values())
-                    total = sum(t for _, t in layers.values())
-                    mdl["queue"].put(
-                        ("progress", (tag, ev.get("status", ""),
-                                      done, total)))
+                    pull["done"] = sum(c for c, _ in
+                                       layers.values())
+                    pull["total"] = sum(t for _, t in
+                                        layers.values())
+                    pull["status"] = ev.get("status", "")
             finally:
                 try:
                     resp.close()
                 except Exception:
                     pass
-                mdl["resp"] = None
-            if mdl["cancelled"]:
-                mdl["queue"].put(("cancelled", tag))
+                pull["resp"] = None
+            if pull["cancelled"]:
+                self.events.put(("pull_cancelled", tag))
                 return
             try:
                 names = [mm["name"] for mm in
@@ -2055,12 +2076,36 @@ class App:
                 self.events.put(("models", names))
             except Exception:
                 pass
-            mdl["queue"].put(("done", tag))
+            self.events.put(("pull_done", tag))
         except Exception as e:
-            if mdl["cancelled"]:
-                mdl["queue"].put(("cancelled", tag))
+            if pull["cancelled"]:
+                self.events.put(("pull_cancelled", tag))
             else:
-                mdl["queue"].put(("error", (tag, str(e))))
+                self.events.put(("pull_error", (tag, str(e))))
+
+    def _mdl_sync_pull(self, mdl):
+        # Render the app-level download (if any) into this
+        # window: its row is the busy one, showing live
+        # progress, its button is Cancel, the rest wait.
+        pull = self._pull
+        if pull is None:
+            return
+        row = mdl["rows"].get(pull["tag"])
+        if row is None:
+            return
+        mdl["busy"] = row
+        row["state"] = "busy"
+        row["btn"].configure(text="Cancel")
+        row["btn"].set_enabled(True)
+        for r in mdl["rows"].values():
+            if r is not row and r["state"] == "ready":
+                r["btn"].set_enabled(False)
+        if pull["total"]:
+            row["status"].configure(
+                text="%d%%" % int(100.0 * pull["done"]
+                                  / pull["total"]))
+        mdl["note"].configure(text="%s - %s" % (
+            pull["tag"], pull["status"] or "downloading"))
 
     def _mdl_drain(self, mdl):
         if self._mdl is not mdl:
@@ -2092,19 +2137,10 @@ class App:
                                                     len(OPTIONAL_MODELS)))
                         mdl["note"].configure(
                             text="Downloads go to this machine "
-                                 "only. One at a time; a "
-                                 "cancelled pull resumes where "
-                                 "it stopped.")
-                elif kind == "progress":
-                    tag, status, done, total = payload
-                    row = mdl["rows"].get(tag)
-                    if row is not None:
-                        if total:
-                            row["status"].configure(
-                                text="%d%%" % int(
-                                    100.0 * done / total))
-                        mdl["note"].configure(
-                            text="%s - %s" % (tag, status))
+                                 "only, one at a time, and keep "
+                                 "running if you close this "
+                                 "window. A cancelled pull "
+                                 "resumes where it stopped.")
                 elif kind == "done":
                     row = mdl["rows"].get(payload)
                     mdl["busy"] = None
@@ -2160,6 +2196,7 @@ class App:
                              % (tag, msg))
         except queue.Empty:
             pass
+        self._mdl_sync_pull(mdl)
         mdl["drain_id"] = self.root.after(90,
                                           lambda: self._mdl_drain(mdl))
 

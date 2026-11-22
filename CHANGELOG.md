@@ -5,6 +5,14 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.12.0 — 2026-11-21
+Model downloads now belong to the app, not the Model
+Manager window: close the manager mid-download and the
+pull keeps going in the background, the finished model
+still lands in the header picker, and reopening the
+manager shows the download mid-flight with its live
+progress and Cancel button, exactly where it is.
+
 ## 1.11.0 — 2026-11-21
 The Model Manager (the Ollama panel's new "Manage models"
 button): an ON THIS MACHINE list of everything installed,
