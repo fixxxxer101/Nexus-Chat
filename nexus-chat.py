@@ -761,9 +761,9 @@ class App:
         self.canvas = tk.Canvas(main, bg=BG, bd=0, highlightthickness=0)
         self.scrollbar = tk.Scrollbar(main, orient="vertical",
                                       command=self.canvas.yview,
-                                      bg=PANEL2, troughcolor=BG, bd=0,
-                                      width=11,
-                                      activebackground=GREEN_FAINT)
+                                      bg=GREEN_DIM, troughcolor=PANEL2,
+                                      bd=0, width=12,
+                                      activebackground=GREEN)
         self.canvas.configure(yscrollcommand=self._on_scroll)
         self.scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
