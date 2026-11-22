@@ -36,6 +36,11 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   *exact* context the model receives for the open chat: your
   prompt, the appended long-term memory, the pinned origin, the
   compressed-topics note, and the messages. Nothing hidden.
+  And when something breaks, **Menu → Error Log…** shows the
+  app's log with the actual tracebacks (the app captures its
+  own UI and worker-thread errors into it) — Copy last error
+  grabs just the newest one, ready to paste to whoever is
+  debugging with you.
 - **Prompt presets.** Save named system prompts in the System
   window, delete them, click to use one — and switch between
   them right in the main window from the **Prompt** picker next

@@ -5,6 +5,19 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.29.0 — 2026-11-22
+Error Log window (Menu → Error Log…), at Clint's ask:
+shows the app's log file (path printed in the window),
+newest at the bottom, with Refresh, Copy all, and a
+Copy last error button that grabs just the most recent
+traceback - built for pasting straight to Vox. To make
+the log worth reading, errors are now captured INTO it:
+UI callback exceptions and worker-thread exceptions
+are hooked and written with full tracebacks (before,
+they went to a console the Windows app does not have),
+and every launch writes a versioned start line so
+sessions are easy to tell apart in a paste.
+
 ## 1.28.0 — 2026-11-21
 Three live reports from the first real image run, fixed:
 leaving the seed blank crashed generation (a missing

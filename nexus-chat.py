@@ -64,6 +64,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import re
 import urllib.parse
 import urllib.request
@@ -77,7 +78,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.28.0"
+VERSION = "1.29.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -347,6 +348,49 @@ def log(msg):
             f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
     except OSError:
         pass
+
+
+def log_exception(context):
+    """Append the active exception's full traceback to the
+    log file, so an error that happens in the UI or a worker
+    thread is IN the log the Error Log window shows - not
+    lost to a console nobody can see (on Windows the app
+    runs without one)."""
+    try:
+        text = "".join(traceback.format_exception(
+            *sys.exc_info())).rstrip()
+        log("%s\n%s" % (context, text))
+    except Exception:
+        pass
+
+
+_THREAD_HOOK_DONE = False
+
+
+def _thread_excepthook(args):
+    try:
+        text = "".join(traceback.format_exception(
+            args.exc_type, args.exc_value,
+            args.exc_traceback)).rstrip()
+        log("Unhandled error in thread %s\n%s"
+            % (args.thread.name if args.thread else "?", text))
+    except Exception:
+        pass
+
+
+def read_log_tail(max_bytes=262144):
+    """The log file's tail as text (the newest entries are
+    what matters; the file is never loaded whole)."""
+    try:
+        size = os.path.getsize(LOG_PATH)
+        with open(LOG_PATH, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()          # drop the partial line
+            data = f.read()
+        return data.decode("utf-8", "replace")
+    except OSError:
+        return ""
 
 
 def system_prefers_dark():
@@ -2470,6 +2514,17 @@ class App:
         self._kbwin = None             # Knowledge Bases window
         self._fdl = None               # in-flight file download
         self._imw = None               # Image Models window
+        self._logwin = None            # Error Log window
+        # Errors land in the log file, where the Error Log
+        # window (Menu -> Error Log...) can show them: UI
+        # callback exceptions and worker-thread exceptions
+        # alike, full tracebacks.
+        root.report_callback_exception = self._on_tk_exception
+        global _THREAD_HOOK_DONE
+        if not _THREAD_HOOK_DONE:
+            _THREAD_HOOK_DONE = True
+            threading.excepthook = _thread_excepthook
+        log("%s v%s started" % (APP_NAME, VERSION))
         self._img_job = None           # running image generation
         self._img_photo = None         # studio's shown PhotoImage
         self._img_current = None       # generation record shown
@@ -3002,6 +3057,8 @@ class App:
                          command=self.open_image_models)
         menu.add_command(label="Knowledge Bases…",
                          command=self.open_kbases)
+        menu.add_command(label="Error Log…",
+                         command=self.open_log)
         menu.add_separator()
         menu.add_command(label="Update Nexus Gate…",
                          command=self.open_update)
@@ -6357,6 +6414,158 @@ class App:
             imw["win"].destroy()
         except Exception:
             pass
+
+    # ---- the Error Log window -----------------------------------
+    # The app's log file, readable and copyable (Clint's
+    # ask: "a window that shows error logs that i can copy
+    # to show you"). UI and worker-thread exceptions are
+    # captured into this file by the hooks installed in
+    # __init__, so what he pastes me is the real traceback.
+
+    def _on_tk_exception(self, exc, val, tb):
+        try:
+            text = "".join(traceback.format_exception(
+                exc, val, tb)).rstrip()
+            log("Unhandled error in the UI\n%s" % text)
+        except Exception:
+            pass
+        if self._logwin:
+            self._log_refresh(self._logwin)
+
+    def open_log(self):
+        tk = self.tk
+        if self._logwin is not None:
+            try:
+                self._logwin["win"].deiconify()
+                self._logwin["win"].lift()
+                self._log_refresh(self._logwin)
+                return
+            except Exception:
+                self._logwin = None
+        win = tk.Toplevel(self.root)
+        style_window(win)
+        win.title("Error Log")
+        win.geometry("660x560")
+        win.minsize(480, 360)
+        win.configure(bg=BG)
+        lw = {"win": win, "text_str": ""}
+        self._logwin = lw
+
+        head = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG, height=56)
+        head.pack(side="top", fill="x", padx=10, pady=(10, 0))
+        head.pack_propagate(False)
+        tk.Label(head, text="ERROR LOG", bg=PANEL, fg=GREEN,
+                 font=(FONT, 13, "bold")).pack(side="left",
+                                               padx=16, pady=14)
+        RoundedButton(head, text="Copy last error",
+                      kind="primary", font=(FONT, 10, "bold"),
+                      bg=PANEL,
+                      command=lambda: self._log_copy(lw, "last")
+                      ).pack(side="right", padx=(0, 8), pady=10)
+        RoundedButton(head, text="Copy all", kind="ghost",
+                      font=(FONT, 10, "bold"), bg=PANEL,
+                      command=lambda: self._log_copy(lw, "all")
+                      ).pack(side="right", padx=(0, 4), pady=10)
+        RoundedButton(head, text="Refresh", kind="ghost",
+                      font=(FONT, 10, "bold"), bg=PANEL,
+                      command=lambda: self._log_refresh(lw)
+                      ).pack(side="right", pady=10)
+        tk.Label(win, text=LOG_PATH, bg=BG, fg=GREEN_DIM,
+                 font=(MONO, 8), anchor="w").pack(
+                     anchor="w", padx=14, pady=(8, 0), fill="x")
+        tk.Label(win, text="Errors land here with their full "
+                           "tracebacks. Copy the last error (or "
+                           "all of it) and paste it to Vox - "
+                           "that is exactly what he needs to "
+                           "find a bug.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left", wraplength=600).pack(
+                     anchor="w", padx=14, pady=(2, 6))
+
+        wrap = tk.Frame(win, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=10,
+                  pady=(0, 4))
+        text = tk.Text(wrap, bg=PANEL, fg=GREEN, bd=0,
+                       highlightthickness=1,
+                       highlightbackground=BORDER,
+                       highlightcolor=BORDER,
+                       insertbackground=ORANGE,
+                       font=(MONO, 9), wrap="word",
+                       padx=10, pady=8)
+        sb = RoundedScrollbar(wrap, command=text.yview, bg=BG)
+        text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", padx=(4, 0))
+        text.pack(side="left", fill="both", expand=True)
+        lw["text"] = text
+
+        def guard(e):
+            if e.state & 0x4:      # Ctrl held: copy/select ok
+                return None
+            if e.keysym in ("Left", "Right", "Up", "Down",
+                            "Prior", "Next", "Home", "End",
+                            "Shift_L", "Shift_R"):
+                return None
+            return "break"
+
+        text.bind("<Key>", guard)
+        text.bind("<Button-2>", lambda e: "break")
+        lw["note"] = tk.Label(win, text="", bg=BG,
+                              fg=ORANGE_DIM, font=(FONT, 9),
+                              justify="left", wraplength=620)
+        lw["note"].pack(anchor="w", padx=14, pady=(0, 10))
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: self._log_close(lw))
+        self._log_refresh(lw)
+
+    def _log_close(self, lw):
+        if self._logwin is not lw:
+            return
+        self._logwin = None
+        try:
+            lw["win"].destroy()
+        except Exception:
+            pass
+
+    def _log_refresh(self, lw):
+        text_str = read_log_tail()
+        lw["text_str"] = text_str
+        shown = text_str if text_str.strip() else (
+            "(The log is empty. Errors and notes will "
+            "appear here.)")
+        w = lw["text"]
+        w.delete("1.0", "end")
+        w.insert("1.0", shown)
+        w.see("end")
+        n = text_str.count("\n")
+        lw["note"].configure(
+            text="%d log lines · %s · newest at the bottom"
+                 % (n, os.path.basename(LOG_PATH)))
+
+    def _log_copy(self, lw, which):
+        text_str = lw["text_str"]
+        if which == "last":
+            idx = text_str.rfind(
+                "Traceback (most recent call last):")
+            if idx >= 0:
+                start = text_str.rfind("\n", 0, idx)
+                chunk = text_str[start + 1:].strip()
+                what = "the last error"
+            else:
+                chunk = "\n".join(
+                    text_str.splitlines()[-30:]).strip()
+                what = "the last 30 lines (no full error " \
+                       "in the log)"
+        else:
+            chunk = text_str.strip()
+            what = "the whole log"
+        if not chunk:
+            lw["note"].configure(text="Nothing to copy yet.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(chunk)
+        lw["note"].configure(
+            text="Copied %s - paste it anywhere." % what)
 
     def _imw_drain(self, imw):
         if self._imw is not imw:
