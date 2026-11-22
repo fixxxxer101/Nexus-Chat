@@ -60,9 +60,11 @@ APP_NAME = "Nexus Chat"
 # The version, shown in the header and the window title. Bump it
 # in the SAME commit as every change, no exceptions: a feature
 # bumps the middle number (1.1.0), a fix bumps the last (1.0.1),
-# a breaking change bumps the first. 1.0.0 is the first versioned
-# release - everything before it was unversioned development.
-VERSION = "1.0.0"
+# a breaking change bumps the first. Numbered retroactively
+# against the git history (see CHANGELOG.md): v1 itself was
+# 1.0.0, and each feature/fix since earned its bump, so the
+# release that added versioning is 1.9.0, not 1.0.0.
+VERSION = "1.9.0"
 IS_WINDOWS = os.name == "nt"
 OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
 if IS_WINDOWS:

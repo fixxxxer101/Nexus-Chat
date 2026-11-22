@@ -79,7 +79,8 @@ Stop kills it and frees all its RAM.
 
 The app is versioned: the header shows its version next to the
 title, and **every shipped change bumps it** — a feature bumps
-the middle number (1.1.0), a fix bumps the last (1.0.1).
+the middle number (1.1.0), a fix bumps the last (1.0.1). The
+full history is in [CHANGELOG.md](CHANGELOG.md).
 
 The sidebar's **Update** button does it from inside the app: it
 runs setup in your git checkout (which pulls the latest code
