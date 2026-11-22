@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.20.4"
+VERSION = "1.21.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -318,6 +318,52 @@ def log(msg):
         with open(LOG_PATH, "a") as f:
             f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
     except OSError:
+        pass
+
+
+def system_prefers_dark():
+    """The Windows app theme: True for dark mode. Read from
+    the personalise setting; anything unreadable falls back
+    to dark (the app's own theme is dark)."""
+    if not IS_WINDOWS:
+        return True
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            "Software\\Microsoft\\Windows\\CurrentVersion"
+            "\\Themes\\Personalize")
+        try:
+            val, _t = winreg.QueryValueEx(key,
+                                          "AppsUseLightTheme")
+            return val == 0
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        return True
+
+
+def apply_titlebar_theme(win):
+    """Set a window's title bar to the system theme (dark
+    when Windows is in dark mode) via the DWM immersive
+    dark-mode attribute. Windows only; a no-op elsewhere,
+    where the window manager owns the decorations."""
+    if not IS_WINDOWS:
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        if not hwnd:
+            hwnd = win.winfo_id()
+        dark = ctypes.c_int(1 if system_prefers_dark() else 0)
+        # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE on current
+        # builds; 19 on the first builds that had it.
+        for attr in (20, 19):
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(dark),
+                    ctypes.sizeof(dark)) == 0:
+                break
+    except Exception:
         pass
 
 
@@ -1644,6 +1690,7 @@ class App:
         self.root.after(300, self._check_ollama)
         self.root.after(80, self._come_to_front)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        apply_titlebar_theme(self.root)
 
     def _come_to_front(self):
         # Open in front, not behind whatever else is running:
@@ -1653,6 +1700,7 @@ class App:
         # normal window afterwards.
         try:
             self.root.deiconify()
+            apply_titlebar_theme(self.root)
             self.root.lift()
             self.root.focus_force()
             self.root.attributes("-topmost", True)
@@ -1966,6 +2014,7 @@ class App:
             return
         tk = self.tk
         win = tk.Toplevel(self.root)
+        apply_titlebar_theme(win)
         win.title("Content opacity")
         win.configure(bg=BG)
         win.geometry("340x180")
@@ -2121,6 +2170,7 @@ class App:
         what the model is told stays hidden."""
         tk = self.tk
         win = tk.Toplevel(self.root)
+        apply_titlebar_theme(win)
         win.title("System Prompt")
         win.geometry("700x780")
         win.configure(bg=BG)
@@ -2815,6 +2865,7 @@ class App:
             except Exception:
                 self._mdl = None
         win = tk.Toplevel(self.root)
+        apply_titlebar_theme(win)
         win.title("Model Manager")
         win.geometry("580x620")
         win.minsize(500, 460)
@@ -3914,6 +3965,7 @@ class App:
             except Exception:
                 self._upd = None
         win = tk.Toplevel(self.root)
+        apply_titlebar_theme(win)
         win.title("Update Nexus Chat")
         win.geometry("580x470")
         win.configure(bg=BG)
@@ -4102,6 +4154,7 @@ class App:
             except Exception:
                 self._ctl = None
         win = tk.Toplevel(self.root)
+        apply_titlebar_theme(win)
         win.title("Ollama Controller")
         win.geometry("500x540")
         win.minsize(440, 480)
@@ -4317,6 +4370,7 @@ class App:
     def open_memory(self):
         tk = self.tk
         win = tk.Toplevel(self.root)
+        apply_titlebar_theme(win)
         win.title("Nexus Chat — Memory")
         win.geometry("560x520")
         win.configure(bg=BG)

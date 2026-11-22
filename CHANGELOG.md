@@ -5,6 +5,15 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.21.0 — 2026-11-21
+The window title bar now follows the system theme: on
+Windows it reads the AppsUseLightTheme setting and sets
+the DWM immersive dark-mode attribute to match - dark on
+a dark-mode system, light on a light one - for the main
+window and every dialog the app opens. No more white
+title bar over a dark app. (Linux/Pi: the window manager
+owns decorations; nothing changes there.)
+
 ## 1.20.4 — 2026-11-21
 Bubble bottoms still unpainted (user and assistant
 bubbles alike, settled state, annotated screenshot):
