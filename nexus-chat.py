@@ -57,6 +57,7 @@ import json
 import math
 import os
 import queue
+import random
 import shutil
 import struct
 import subprocess
@@ -76,7 +77,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.27.0"
+VERSION = "1.28.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1122,6 +1123,9 @@ SD_DIR = os.path.join(DATA_DIR, "sd")
 SD_CLI = os.environ.get("NEXUS_SD_CLI") or os.path.join(
     SD_DIR, "sd-cli.exe" if IS_WINDOWS else "sd-cli")
 IMG_MODELS_DIR = os.path.join(DATA_DIR, "image-models")
+IMG_VAE_DIR = os.path.join(IMG_MODELS_DIR, "vae")
+IMG_LORA_DIR = os.path.join(IMG_MODELS_DIR, "loras")
+LORA_STAGE_DIR = os.path.join(DATA_DIR, "lora-stage")
 IMG_DIR = os.path.join(DATA_DIR, "images")
 IMG_EXTS = {".safetensors", ".ckpt", ".gguf"}
 IMG_FOLDER_EXTS = {".safetensors", ".ckpt"}
@@ -1202,6 +1206,32 @@ def sd_cli_path():
     return SD_CLI if os.path.isfile(SD_CLI) else None
 
 
+def sd_fallback_path():
+    """The CPU build setup installs alongside a GPU build,
+    in its own subfolder (its DLLs differ and must not mix):
+    the safety net when a GPU build crashes on a machine's
+    driver. None where setup never put one (Linux builds
+    from source are already the portable build)."""
+    p = os.path.join(SD_DIR, "cpu",
+                     "sd-cli.exe" if IS_WINDOWS else "sd-cli")
+    return p if os.path.isfile(p) else None
+
+
+def classify_image_file(path):
+    """What kind of image file this is, from where it
+    lives and what it is called: a 'vae' or 'loras' folder
+    decides it (the ComfyUI layout), a 'vae' in the file
+    name marks a VAE, everything else is a checkpoint."""
+    parts = path.replace("\\", "/").lower().split("/")
+    name = parts[-1]
+    folders = parts[:-1]
+    if "loras" in folders or "lora" in folders:
+        return "lora"
+    if "vae" in folders or "vae" in name:
+        return "vae"
+    return "model"
+
+
 def img_catalog_entry(filename):
     if filename == IMG_BASELINE_FILE:
         return IMG_BASELINE
@@ -1218,10 +1248,11 @@ def img_pretty_name(filename):
     return os.path.splitext(filename)[0]
 
 
-def scan_image_dirs(dirs):
-    """Checkpoint files under the given folders, recursively,
+def scan_image_files(dirs):
+    """Every image file under the given folders, recursively,
     subfolders followed, loops guarded - the image twin of
-    scan_model_dirs. Only .safetensors/.ckpt: a folder's
+    scan_model_dirs. Each: {path, kind} with kind from
+    classify_image_file. Only .safetensors/.ckpt: a folder's
     .gguf files are chat models until proven otherwise."""
     found, seen = [], set()
     for d in dirs:
@@ -1236,8 +1267,71 @@ def scan_image_dirs(dirs):
             for fn in sorted(files):
                 if os.path.splitext(fn)[1].lower() \
                         in IMG_FOLDER_EXTS:
-                    found.append(os.path.join(root, fn))
+                    p = os.path.join(root, fn)
+                    found.append({"path": p,
+                                  "kind": classify_image_file(p)})
     return found
+
+
+def scan_image_dirs(dirs):
+    """Checkpoint files only (kind 'model') under the given
+    folders - see scan_image_files."""
+    return [e["path"] for e in scan_image_files(dirs)
+            if e["kind"] == "model"]
+
+
+def image_aux_entries(settings, kind, app_dir):
+    """VAE or LoRA files the studio can use: the app's own
+    downloads for that kind first, then folder-linked files
+    of that kind in place. Each: {name, file, path, where}
+    with name the file stem (what a LoRA tag refers to)."""
+    out, seen = [], set()
+
+    def add(path, where):
+        rp = os.path.realpath(path)
+        if rp in seen:
+            return
+        seen.add(rp)
+        fn = os.path.basename(path)
+        out.append({"name": os.path.splitext(fn)[0],
+                    "file": fn, "path": path, "where": where})
+
+    if os.path.isdir(app_dir):
+        for fn in sorted(os.listdir(app_dir)):
+            if os.path.splitext(fn)[1].lower() in IMG_EXTS:
+                add(os.path.join(app_dir, fn), "Nexus Gate")
+    for e in scan_image_files(settings.get("img_dirs") or []):
+        if e["kind"] == kind:
+            add(e["path"], "In place")
+    return out
+
+
+def ihf_files_for(kind, repo_id, files):
+    """The downloadable files of one Hugging Face repo for
+    one search kind. Models and LoRAs: single-file
+    checkpoints at the repo's top level. VAEs: the VAE
+    weights wherever they sit (a diffusers repo keeps them
+    under vae/), recognised by classify_image_file."""
+    out = []
+    for f in files:
+        if f.get("type") != "file":
+            continue
+        path = f.get("path", "")
+        ext = os.path.splitext(path)[1].lower()
+        if kind == "vae":
+            if ext not in (".safetensors", ".pt", ".ckpt"):
+                continue
+            if classify_image_file(path) != "vae":
+                continue
+        elif kind == "lora":
+            if "/" in path or ext not in IMG_EXTS:
+                continue
+        else:
+            if "/" in path or ext not in IMG_EXTS:
+                continue
+        out.append({"repo": repo_id, "file": path,
+                    "size": f.get("size", 0), "kind": kind})
+    return out
 
 
 def image_model_entries(settings):
@@ -1288,6 +1382,10 @@ def list_generations():
     return out
 
 
+_LORA_TAG_RE = re.compile(r"<lora:([^:>]+)(?::([0-9.]+))?>",
+                          re.I)
+
+
 def build_sd_args(cli, job):
     w, h = job["size"].lower().split("x")
     args = [cli, "-m", job["model_path"],
@@ -1300,7 +1398,56 @@ def build_sd_args(cli, job):
             "-o", job["out"]]
     if job.get("negative"):
         args += ["-n", job["negative"]]
+    if job.get("vae"):
+        args += ["--vae", job["vae"]]
+    if job.get("lora_dir"):
+        args += ["--lora-model-dir", job["lora_dir"]]
     return args
+
+
+def stage_loras(job, emit):
+    """sd-cli takes ONE LoRA folder, but the prompt's LoRAs
+    can live in several (the app's folder, linked folders).
+    Link every LoRA the prompt names into a single staging
+    folder and point the engine at it. Missing names are
+    reported, not silently dropped."""
+    tags = _LORA_TAG_RE.findall(job["prompt"])
+    if not tags:
+        return
+    known = job.get("loras") or {}
+    wanted = []
+    for name, _w in tags:
+        path = known.get(name.strip().lower())
+        if path:
+            wanted.append((name.strip(), path))
+        else:
+            emit("log", "LoRA not found, tag ignored: %s"
+                        % name.strip())
+    if not wanted:
+        return
+    try:
+        os.makedirs(LORA_STAGE_DIR, exist_ok=True)
+        for fn in os.listdir(LORA_STAGE_DIR):
+            p = os.path.join(LORA_STAGE_DIR, fn)
+            if os.path.isfile(p):
+                os.remove(p)
+        for name, path in wanted:
+            dest = os.path.join(LORA_STAGE_DIR,
+                                os.path.basename(path))
+            if os.path.exists(dest):
+                continue
+            try:
+                os.link(path, dest)
+            except OSError:
+                try:
+                    os.symlink(path, dest)
+                except OSError:
+                    shutil.copyfile(path, dest)
+        job["lora_dir"] = LORA_STAGE_DIR
+        emit("log", "LoRAs staged: %s"
+                    % ", ".join(n for n, _p in wanted))
+    except Exception as e:
+        emit("log", "LoRA staging failed: %s" % e)
 
 
 def run_sd_image(job, emit):
@@ -1309,7 +1456,9 @@ def run_sd_image(job, emit):
     as ('step', (i, n)), ('log', line); the result is
     ('done', returncode). The Popen handle is stored on the
     job dict so the app can terminate it (Cancel)."""
-    args = build_sd_args(sd_cli_path() or SD_CLI, job)
+    stage_loras(job, emit)
+    args = build_sd_args(job.get("cli") or sd_cli_path()
+                         or SD_CLI, job)
     emit("log", "sd-cli " + " ".join(
         a if " " not in a else '"%s"' % a for a in args[1:]))
     proc = subprocess.Popen(
@@ -2320,10 +2469,12 @@ class App:
         self._pull = None              # in-flight model download
         self._kbwin = None             # Knowledge Bases window
         self._fdl = None               # in-flight file download
+        self._imw = None               # Image Models window
         self._img_job = None           # running image generation
         self._img_photo = None         # studio's shown PhotoImage
         self._img_current = None       # generation record shown
         self.img_model_path = None     # studio's picked model
+        self.img_vae_path = None       # studio's picked VAE
         self.mode = self.store.settings.get("mode", "chat")
         self._send_aborted = False     # Stop during a KB search
 
@@ -2847,6 +2998,8 @@ class App:
                          command=self.open_controller)
         menu.add_command(label="Model Manager…",
                          command=self.open_models)
+        menu.add_command(label="Image Models…",
+                         command=self.open_image_models)
         menu.add_command(label="Knowledge Bases…",
                          command=self.open_kbases)
         menu.add_separator()
@@ -3640,6 +3793,18 @@ class App:
                                pady=10)
             self._img_refresh_models()
             self._img_history_refresh()
+        # A mode switch is a full relayout - cards swap,
+        # the sidebar resizes, the input bar comes and goes.
+        # On Windows a card's outline can end up drawn at a
+        # size from mid-cascade (the stale-size failure the
+        # settle pass exists for), so re-settle every layout
+        # card once the new geometry is final.
+        self.root.after_idle(self._settle_cards)
+
+    def _settle_cards(self):
+        for w in self._frame_widgets:
+            if isinstance(w, BubbleFrame):
+                w.settle()
 
     def _build_image_studio(self, card):
         tk = self.tk
@@ -3665,8 +3830,31 @@ class App:
         iw["model_btn"].pack(side="left")
         RoundedButton(mrow, text="Image models…", kind="quiet",
                       bg=PANEL, font=(FONT, 9),
-                      command=self.open_models
+                      command=self.open_image_models
                       ).pack(side="right")
+        mrow2 = tk.Frame(inner, bg=PANEL)
+        mrow2.pack(fill="x", pady=(6, 0))
+        tk.Label(mrow2, text="VAE", bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(side="left", padx=(0, 6))
+        self.img_vae_path = ui.get("vae") or None
+        iw["vae_btn"] = RoundedButton(
+            mrow2, text="Built-in", kind="ghost",
+            font=(FONT, 10), bg=PANEL,
+            command=self._img_vae_popup)
+        iw["vae_btn"].pack(side="left")
+        tk.Label(mrow2, text="LoRA", bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(side="left",
+                                      padx=(14, 6))
+        iw["lora_btn"] = RoundedButton(
+            mrow2, text="Insert…", kind="ghost",
+            font=(FONT, 10), bg=PANEL,
+            command=self._img_lora_popup)
+        iw["lora_btn"].pack(side="left")
+        tk.Label(mrow2, text="adds a <lora:name:0.8> tag to "
+                             "the prompt - edit the weight "
+                             "right in the text",
+                 bg=PANEL, fg=GREEN_DIM, font=(FONT, 8)).pack(
+                     side="left", padx=(8, 0))
         view_frame = tk.Frame(inner, bg=PANEL)
         view_frame.pack(fill="both", expand=True, pady=(10, 6))
         iw["view"] = tk.Label(
@@ -3837,6 +4025,18 @@ class App:
         self._imgw["sampler_btn"].configure(
             text=self._img_sampler_label())
 
+    def _sd_effective(self):
+        """The engine binary a generation will actually
+        use: the CPU fallback when it has taken over (or
+        when it is all a machine has), else the installed
+        build."""
+        fb = sd_fallback_path()
+        if self.store.settings.get("img_cpu_fallback") and fb:
+            return fb
+        if sd_cli_path():
+            return SD_CLI
+        return fb
+
     def _img_refresh_models(self):
         iw = self._imgw
         entries = image_model_entries(self.store.settings)
@@ -3851,14 +4051,63 @@ class App:
                 os.path.basename(self.img_model_path)))
         else:
             iw["model_btn"].configure(text="No models")
-        cli = sd_cli_path()
+        if self.img_vae_path and not os.path.isfile(
+                self.img_vae_path):
+            self.img_vae_path = None
+        iw["vae_btn"].configure(
+            text=os.path.splitext(os.path.basename(
+                self.img_vae_path))[0] if self.img_vae_path
+            else "Built-in")
+        cli = self._sd_effective()
         if cli:
+            if self.store.settings.get("img_cpu_fallback"):
+                desc = "cpu - the GPU build crashed here"
+            else:
+                desc = sd_backend() or "custom"
             iw["engine"].configure(
-                text="Engine: sd-cli ✓ (%s)"
-                     % (sd_backend() or "custom"))
+                text="Engine: sd-cli ✓ (%s)" % desc)
         else:
             iw["engine"].configure(
                 text="Engine: not installed - run setup")
+
+    def _img_vae_popup(self):
+        entries = image_aux_entries(self.store.settings,
+                                    "vae", IMG_VAE_DIR)
+        items = [("Built-in (the model's own VAE)", "")]
+        items += [(e["name"] + "  ·  " + e["where"], e["path"])
+                  for e in entries]
+        self._img_popup(self._imgw["vae_btn"], items,
+                        self._img_pick_vae)
+
+    def _img_pick_vae(self, path):
+        self.img_vae_path = path or None
+        self._imgw["vae_btn"].configure(
+            text=os.path.splitext(os.path.basename(path))[0]
+            if path else "Built-in")
+        self._img_save_ui()
+
+    def _img_lora_popup(self):
+        entries = image_aux_entries(self.store.settings,
+                                    "lora", IMG_LORA_DIR)
+        if not entries:
+            self._imgw["status"].configure(
+                text="No LoRAs yet - download one in Image "
+                     "models… or link a folder that has some.")
+            return
+        self._img_popup(
+            self._imgw["lora_btn"],
+            [(e["name"] + "  ·  " + e["where"], e)
+             for e in entries],
+            self._img_pick_lora)
+
+    def _img_pick_lora(self, entry):
+        tag = "<lora:%s:0.8> " % entry["name"]
+        prompt = self._imgw["prompt"]
+        try:
+            prompt.insert("insert", tag)
+        except Exception:
+            prompt.insert("end", tag)
+        prompt.focus_set()
 
     def _img_save_ui(self, seed=None):
         iw = self._imgw
@@ -3869,7 +4118,8 @@ class App:
             "seed": (str(seed) if seed is not None
                      else iw["seed"].get().strip()),
             "negative": iw["negative"].get(),
-            "model": self.img_model_path}
+            "model": self.img_model_path,
+            "vae": self.img_vae_path or ""}
         self.store.save_settings()
 
     def _img_generate_or_cancel(self):
@@ -3889,7 +4139,7 @@ class App:
         if not prompt:
             iw["status"].configure(text="Write a prompt first.")
             return
-        if not sd_cli_path():
+        if not self._sd_effective():
             iw["status"].configure(
                 text="The image engine is not installed - run "
                      "setup and it will be added.")
@@ -3925,20 +4175,31 @@ class App:
             n += 1
             out = os.path.join(IMG_DIR,
                                "img-%s-%d.png" % (stamp, n))
+        loras = {}
+        for e in image_aux_entries(self.store.settings,
+                                   "lora", IMG_LORA_DIR):
+            loras[e["name"].lower()] = e["path"]
         job = {"model_path": self.img_model_path,
                "prompt": prompt,
                "negative": iw["negative"].get().strip(),
                "steps": steps, "cfg": cfg, "size": self._img_size,
                "seed": seed, "sampler": self._img_sampler,
                "out": out, "proc": None, "cancelled": False,
-               "started": time.time()}
+               "started": time.time(),
+               "cli": self._sd_effective(),
+               "vae": self.img_vae_path
+               if self.img_vae_path and os.path.isfile(
+                   self.img_vae_path) else None,
+               "loras": loras}
         self._img_job = job
         self._img_save_ui(seed=seed)
         iw["gen_btn"].configure(text="Cancel")
         iw["status"].configure(text="Loading the model…")
         iw["log"].configure(text="")
         self._img_bar(0)
+        self._img_launch(job)
 
+    def _img_launch(self, job):
         def emit(kind, payload):
             if kind == "done":
                 self.events.put(("img_done", (job, payload)))
@@ -3971,6 +4232,32 @@ class App:
             self._img_bar(0)
             return
         if rc != 0 or not os.path.isfile(job["out"]):
+            fb = sd_fallback_path()
+            if fb and job.get("cli") != fb \
+                    and not job.get("retried_cpu"):
+                # A GPU build that crashes on this machine's
+                # driver must not dead-end image generation:
+                # fall back to the CPU build, remember it,
+                # and say so - the studio's engine line tells
+                # the same story from now on.
+                job["retried_cpu"] = True
+                job["cli"] = fb
+                job["proc"] = None
+                self._img_job = job
+                iw["gen_btn"].configure(text="Cancel")
+                self.store.settings["img_cpu_fallback"] = True
+                self.store.save_settings()
+                if os.path.isfile(job["out"]):
+                    try:
+                        os.remove(job["out"])
+                    except OSError:
+                        pass
+                iw["status"].configure(
+                    text="The GPU build crashed (code %s) - "
+                         "retrying with the CPU build…" % rc)
+                self._img_refresh_models()
+                self._img_launch(job)
+                return
             iw["status"].configure(
                 text="The engine stopped (code %s) - its last "
                      "line is below." % rc)
@@ -3986,6 +4273,9 @@ class App:
                "size": job["size"], "steps": job["steps"],
                "cfg": job["cfg"], "seed": job["seed"],
                "sampler": job["sampler"],
+               "vae": os.path.basename(job["vae"])
+               if job.get("vae") else "",
+               "vae_path": job.get("vae") or "",
                "created": time.time()}
         try:
             with open(os.path.join(
@@ -4057,6 +4347,11 @@ class App:
             self.img_model_path = rec["model_path"]
             iw["model_btn"].configure(text=rec.get(
                 "model", img_pretty_name(rec["model_file"])))
+        if rec.get("vae_path") and os.path.isfile(
+                rec["vae_path"]):
+            self._img_pick_vae(rec["vae_path"])
+        elif not rec.get("vae_path"):
+            self._img_pick_vae("")
         self._img_show(os.path.join(IMG_DIR, rec["file"]))
         iw["status"].configure(
             text="%s - %s, %d steps, CFG %s, seed %s"
@@ -4115,6 +4410,8 @@ class App:
     # Model Manager does not stop one, and the manager polls
     # this dict to draw progress.
     def _start_fdownload(self, tag, url, dest, sha256=None):
+        if self._fdl and self._fdl["done"]:
+            self._fdl = None     # a finished one never blocks
         if self._fdl:
             return False
         st = {"tag": tag, "url": url, "dest": dest, "got": 0,
@@ -4161,6 +4458,7 @@ class App:
             except Exception as e:
                 st["error"] = str(e)
             st["done"] = True
+            self.events.put(("fdl_done", st))
 
         threading.Thread(target=work, daemon=True).start()
         return True
@@ -4499,6 +4797,10 @@ class App:
                     job, rc = text
                     if job is self._img_job:
                         self._img_finish(job, rc)
+                elif kind == "fdl_done":
+                    self._img_refresh_models()
+                    if self._imw:
+                        self._imgmdl_render(self._imw)
                 elif kind == "pull_done":
                     self._pull = None
                     if self._mdl is not None:
@@ -4916,76 +5218,6 @@ class App:
             btn.set_enabled(False)
             mdl["rows"][tag] = row
 
-        tk.Label(flow, text="IMAGE MODELS", bg=BG,
-                 fg=ORANGE_DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w", padx=6,
-                                              pady=(16, 4))
-        mdl["img_engine"] = tk.Label(flow, text="", bg=BG,
-                                     fg=GREEN_DIM, font=(FONT, 9),
-                                     justify="left",
-                                     wraplength=500)
-        mdl["img_engine"].pack(anchor="w", padx=6)
-        tk.Label(flow, text="Image generation runs on sd-cli "
-                            "(stable-diffusion.cpp): one small "
-                            "program, no ComfyUI, no Python "
-                            "stack. The baseline is required; "
-                            "the rest are optional downloads "
-                            "into the app's own folder.",
-                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
-                 justify="left",
-                 wraplength=500).pack(anchor="w", padx=6,
-                                      pady=(2, 0))
-        mdl["img_rows_frame"] = tk.Frame(flow, bg=BG)
-        mdl["img_rows_frame"].pack(fill="x")
-
-        tk.Label(flow, text="IMAGE SEARCH (HUGGING FACE)",
-                 bg=BG, fg=ORANGE_DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w", padx=6,
-                                              pady=(12, 4))
-        tk.Label(flow, text="Search Hugging Face for "
-                            "text-to-image models and download "
-                            "a single-file checkpoint "
-                            "(.safetensors / .ckpt / .gguf) "
-                            "from the repo's top level.",
-                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
-                 justify="left",
-                 wraplength=500).pack(anchor="w", padx=6)
-        isbar = tk.Frame(flow, bg=BG)
-        isbar.pack(fill="x", padx=4, pady=(4, 0))
-        iswrap = BubbleFrame(isbar, fill=PANEL2,
-                             outline=BORDER, radius=11, bg=BG)
-        iswrap.pack(side="left", fill="x", expand=True)
-        mdl["ihf_entry"] = tk.Entry(iswrap, bg=PANEL2,
-                                    fg=GREEN,
-                                    insertbackground=ORANGE,
-                                    bd=0, highlightthickness=0,
-                                    font=(FONT, 10))
-        mdl["ihf_entry"].pack(fill="x", padx=10, pady=6)
-        mdl["ihf_entry"].bind("<Return>",
-                              lambda e: self._ihf_go(mdl))
-        mdl["ihf_btn"] = RoundedButton(
-            isbar, text="Search", kind="ghost",
-            font=(FONT, 10, "bold"), bg=BG,
-            command=lambda: self._ihf_go(mdl))
-        mdl["ihf_btn"].pack(side="right", padx=(8, 0))
-        mdl["ihf_frame"] = tk.Frame(flow, bg=BG)
-        mdl["ihf_frame"].pack(fill="x")
-
-        tk.Label(flow, text="IMAGE MODEL FOLDERS", bg=BG,
-                 fg=ORANGE_DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w", padx=6,
-                                              pady=(12, 4))
-        tk.Label(flow, text="Folders scanned for image "
-                            "checkpoints (.safetensors / "
-                            ".ckpt), used in place where they "
-                            "already live - a ComfyUI "
-                            "checkpoints folder works here as "
-                            "a plain folder of files.",
-                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
-                 justify="left",
-                 wraplength=500).pack(anchor="w", padx=6)
-        mdl["img_loc_frame"] = tk.Frame(flow, bg=BG)
-        mdl["img_loc_frame"].pack(fill="x")
 
         bind_wheel(canvas)
         bind_wheel(flow)
@@ -4998,7 +5230,6 @@ class App:
         win.protocol("WM_DELETE_WINDOW",
                      lambda: self._mdl_close(mdl))
         self._loc_render(mdl)
-        self._imgmdl_render(mdl)
         self._mdl_refresh(mdl)
         self._mdl_drain(mdl)
 
@@ -5395,14 +5626,19 @@ class App:
     # ---- image models in the manager ------------------------------
     def _imgmdl_render(self, mdl):
         tk = self.tk
-        cli = sd_cli_path()
+        cli = self._sd_effective()
         base_path = os.path.join(IMG_MODELS_DIR,
                                  IMG_BASELINE_FILE)
         if cli:
+            if self.store.settings.get("img_cpu_fallback"):
+                desc = "cpu fallback - the GPU build crashed " \
+                       "on this machine"
+            else:
+                desc = (sd_backend() or "custom") + " build"
             mdl["img_engine"].configure(
-                text="Image engine: sd-cli ✓ (%s build). "
+                text="Image engine: sd-cli ✓ (%s). "
                      "Baseline model: %s."
-                     % (sd_backend() or "custom",
+                     % (desc,
                         "installed" if os.path.isfile(base_path)
                         else "NOT downloaded yet"))
         else:
@@ -5410,6 +5646,25 @@ class App:
                 text="Image engine: NOT installed - run setup "
                      "and it will be added, matched to this "
                      "machine's GPU.")
+        fb = sd_fallback_path()
+        if mdl.get("fb_btn") is not None:
+            if not fb:
+                mdl["fb_label"].configure(
+                    text="CPU fallback build: not installed "
+                         "(setup adds one beside a GPU build).")
+                mdl["fb_btn"].set_enabled(False)
+            elif self.store.settings.get("img_cpu_fallback"):
+                mdl["fb_label"].configure(
+                    text="CPU fallback: ON - generations run "
+                         "on the CPU build.")
+                mdl["fb_btn"].configure(text="Retry GPU build")
+                mdl["fb_btn"].set_enabled(True)
+            else:
+                mdl["fb_label"].configure(
+                    text="CPU fallback: installed, standing by "
+                         "in case the GPU build crashes.")
+                mdl["fb_btn"].configure(text="Retry GPU build")
+                mdl["fb_btn"].set_enabled(False)
         frame = mdl["img_rows_frame"]
         for child in frame.winfo_children():
             child.destroy()
@@ -5463,8 +5718,102 @@ class App:
                 btn.configure(text="Delete")
             mdl["img_rows"][entry["file"]] = row
             mdl["bind_wheel"](rowf)
+        self._imgaux_render(mdl, "vae")
+        self._imgaux_render(mdl, "lora")
         self._imgloc_render(mdl)
         self._imgmdl_poll(mdl)
+
+    def _imw_fb_retry(self, mdl):
+        """Forget the CPU fallback and try the GPU build
+        again on the next generation."""
+        self.store.settings["img_cpu_fallback"] = False
+        self.store.save_settings()
+        self._img_refresh_models()
+        self._imgmdl_render(mdl)
+        mdl["note"].configure(
+            text="GPU build will be tried again on the next "
+                 "generation.")
+
+    def _imgaux_render(self, mdl, kind):
+        """The downloaded VAEs / LoRAs the app itself holds
+        (folder-linked ones are listed as a count - they are
+        removed by unlinking their folder below)."""
+        tk = self.tk
+        frame = mdl["vae_frame" if kind == "vae"
+                    else "lora_frame"]
+        app_dir = IMG_VAE_DIR if kind == "vae" else IMG_LORA_DIR
+        for child in frame.winfo_children():
+            child.destroy()
+        files = []
+        if os.path.isdir(app_dir):
+            files = [fn for fn in sorted(os.listdir(app_dir))
+                     if os.path.splitext(fn)[1].lower()
+                     in IMG_EXTS]
+        linked = [e for e in image_aux_entries(
+            self.store.settings, kind, app_dir)
+            if e["where"] == "In place"]
+        if not files and not linked:
+            tk.Label(frame, text="None yet - search below, "
+                                 "or link a folder that has "
+                                 "some.", bg=BG, fg=GREEN_DIM,
+                     font=(FONT, 9)).pack(anchor="w", padx=6)
+            return
+        armed = mdl.get("aux_armed") or {}
+        for fn in files:
+            path = os.path.join(app_dir, fn)
+            rowf = BubbleFrame(frame, fill=PANEL,
+                               outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            btn = RoundedButton(
+                rowf,
+                text="Sure?" if armed.get(path) else "Delete",
+                kind="ghost",
+                font=(FONT, 10, "bold"), bg=PANEL,
+                command=lambda p=path:
+                    self._imgaux_delete(mdl, kind, p))
+            btn.pack(side="right", padx=10, pady=8)
+            tk.Label(rowf, text=os.path.splitext(fn)[0],
+                     bg=PANEL, fg=GREEN,
+                     font=(FONT, 10, "bold")).pack(
+                         anchor="w", padx=12, pady=(6, 0))
+            tk.Label(rowf, text="%s - downloaded" % fmt_bytes(
+                os.path.getsize(path)), bg=PANEL, fg=GREEN_DIM,
+                font=(MONO, 8), anchor="w").pack(
+                    anchor="w", padx=12, pady=(0, 6), fill="x")
+            mdl["bind_wheel"](rowf)
+        if linked:
+            tk.Label(frame,
+                     text="+ %d more in linked folders "
+                          "(in place): %s"
+                          % (len(linked),
+                             ", ".join(e["name"]
+                                       for e in linked[:6])),
+                     bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                     justify="left", wraplength=500).pack(
+                         anchor="w", padx=6, pady=(2, 0))
+
+    def _imgaux_delete(self, mdl, kind, path):
+        armed = mdl.setdefault("aux_armed", {})
+        if armed.get(path):
+            armed.pop(path, None)
+            try:
+                os.remove(path)
+            except OSError as e:
+                mdl["note"].configure(
+                    text="Could not delete %s: %s"
+                         % (os.path.basename(path), e))
+                return
+            self._imgmdl_render(mdl)
+            self._img_refresh_models()
+            return
+        armed[path] = True
+        self._imgaux_render(mdl, kind)
+        self.root.after(
+            2500,
+            lambda: (armed.pop(path, None),
+                     self._imgaux_render(mdl, kind)
+                     if self._imw is mdl else None))
 
     def _imgmdl_click(self, mdl, row):
         entry = row["entry"]
@@ -5482,7 +5831,7 @@ class App:
                     2500,
                     lambda r=row: (r.update(armed=False),
                                    self._imgmdl_render(mdl)
-                                   if self._mdl is mdl
+                                   if self._imw is mdl
                                    else None))
                 return
             try:
@@ -5540,26 +5889,56 @@ class App:
                 self._ihf_render(mdl, mdl["ihf_results"])
 
     # ---- image search (Hugging Face) ------------------------------
+    _IHF_KIND_LABEL = {"model": "SD models", "vae": "VAEs",
+                       "lora": "LoRAs"}
+
+    def _ihf_kind_render(self, mdl):
+        tk = self.tk
+        frame = mdl["kind_frame"]
+        for c in frame.winfo_children():
+            c.destroy()
+        for kind in ("model", "vae", "lora"):
+            RoundedButton(
+                frame, text=self._IHF_KIND_LABEL[kind],
+                kind="primary" if mdl["ihf_kind"] == kind
+                else "ghost",
+                bg=BG, font=(FONT, 9, "bold"),
+                command=lambda k=kind: self._ihf_kind_pick(
+                    mdl, k)).pack(side="left",
+                                  padx=(0, 6))
+
+    def _ihf_kind_pick(self, mdl, kind):
+        mdl["ihf_kind"] = kind
+        mdl["ihf_results"] = None
+        for child in mdl["ihf_frame"].winfo_children():
+            child.destroy()
+        self._ihf_kind_render(mdl)
+
     def _ihf_go(self, mdl):
         query = mdl["ihf_entry"].get().strip()
         if not query:
             mdl["note"].configure(
                 text="Type a name or a word to search "
-                     "Hugging Face for image models.")
+                     "Hugging Face.")
             return
         mdl["ihf_btn"].set_enabled(False)
         mdl["note"].configure(
-            text="Searching Hugging Face for image models...")
+            text="Searching Hugging Face for %s..."
+                 % self._IHF_KIND_LABEL[mdl["ihf_kind"]])
         threading.Thread(target=self._ihf_search,
                          args=(mdl, query), daemon=True).start()
 
     def _ihf_search(self, mdl, query):
+        kind = mdl["ihf_kind"]
         try:
-            qs = urllib.parse.urlencode(
-                {"search": query,
-                 "pipeline_tag": "text-to-image",
-                 "sort": "downloads", "direction": "-1",
-                 "limit": "20"})
+            params = {"search": query,
+                      "sort": "downloads", "direction": "-1",
+                      "limit": "20"}
+            if kind == "model":
+                params["pipeline_tag"] = "text-to-image"
+            elif kind == "lora":
+                params["filter"] = "lora"
+            qs = urllib.parse.urlencode(params)
             req = urllib.request.Request(
                 HF_API + "/api/models?" + qs,
                 headers={"User-Agent": "NexusGate"})
@@ -5578,16 +5957,11 @@ class App:
                                                 timeout=30) as r:
                         files = json.loads(
                             r.read().decode("utf-8"))
-                    return [{"repo": rid, "file": f["path"],
-                             "size": f.get("size", 0),
-                             "downloads": repo.get(
-                                 "downloads", 0)}
-                            for f in files
-                            if f.get("type") == "file"
-                            and "/" not in f.get("path", "")
-                            and os.path.splitext(
-                                f["path"])[1].lower()
-                            in IMG_EXTS]
+                    out = ihf_files_for(kind, rid, files)
+                    for it in out:
+                        it["downloads"] = repo.get(
+                            "downloads", 0)
+                    return out
                 except Exception:
                     return []
 
@@ -5600,6 +5974,17 @@ class App:
             mdl["queue"].put(("ihf_error", str(e)))
 
     def _ihf_dest(self, item):
+        kind = item.get("kind", "model")
+        if kind == "vae":
+            return os.path.join(
+                IMG_VAE_DIR,
+                item["repo"].replace("/", "_") + "__"
+                + os.path.basename(item["file"]))
+        if kind == "lora":
+            return os.path.join(
+                IMG_LORA_DIR,
+                item["repo"].replace("/", "_") + "__"
+                + os.path.basename(item["file"]))
         return os.path.join(
             IMG_MODELS_DIR,
             item["repo"].replace("/", "_") + "__"
@@ -5613,9 +5998,16 @@ class App:
         for child in frame.winfo_children():
             child.destroy()
         if not results:
-            tk.Label(frame, text="No single-file checkpoints "
-                                 "found at the top level of "
-                                 "those repos.",
+            empty = {
+                "vae": "No VAE files found in those repos "
+                       "(looked for vae/ folders and 'vae' "
+                       "file names).",
+                "lora": "No single-file LoRAs found at the "
+                        "top level of those repos.",
+            }.get(mdl.get("ihf_kind", "model"),
+                  "No single-file checkpoints found at the "
+                  "top level of those repos.")
+            tk.Label(frame, text=empty,
                      bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
                          anchor="w", padx=6)
             return
@@ -5676,7 +6068,17 @@ class App:
         for child in frame.winfo_children():
             child.destroy()
         for d in dirs:
-            n = len(scan_image_dirs([d]))
+            found = scan_image_files([d])
+            counts = {"model": 0, "vae": 0, "lora": 0}
+            for e in found:
+                counts[e["kind"]] += 1
+            bits = []
+            if counts["model"]:
+                bits.append("%d model(s)" % counts["model"])
+            if counts["vae"]:
+                bits.append("%d VAE(s)" % counts["vae"])
+            if counts["lora"]:
+                bits.append("%d LoRA(s)" % counts["lora"])
             rowf = BubbleFrame(frame, fill=PANEL,
                                outline=BORDER,
                                radius=RADIUS_PANEL, bg=BG)
@@ -5692,8 +6094,8 @@ class App:
                          anchor="w", padx=12, pady=(8, 0),
                          fill="x")
             tk.Label(rowf,
-                     text=("%d checkpoint(s) found here" % n)
-                     if n else "No checkpoints found here",
+                     text=(", ".join(bits) + " found here")
+                     if bits else "Nothing image-like here",
                      bg=PANEL, fg=GREEN_DIM,
                      font=(FONT, 8)).pack(anchor="w", padx=12,
                                           pady=(0, 8))
@@ -5730,6 +6132,253 @@ class App:
             self.store.save_settings()
         self._imgloc_render(mdl)
         self._img_refresh_models()
+
+    # ---- the Image Models window --------------------------------
+    # Image models get their OWN manager (Clint's call): the
+    # chat Model Manager is for chat models. Everything image
+    # lives here - the engine, SD checkpoints, VAE encoders,
+    # LoRAs, Hugging Face search by kind, and the folders
+    # whose files are used in place.
+
+    def open_image_models(self):
+        tk = self.tk
+        if self._imw is not None:
+            try:
+                self._imw["win"].deiconify()
+                self._imw["win"].lift()
+                return
+            except Exception:
+                self._imw = None
+        win = tk.Toplevel(self.root)
+        style_window(win)
+        win.title("Image Models")
+        win.geometry("580x640")
+        win.minsize(500, 460)
+        win.configure(bg=BG)
+        imw = {"win": win, "queue": queue.Queue(),
+               "drain_id": None, "img_rows": {},
+               "ihf_kind": "model", "ihf_results": None,
+               "fb_btn": None, "aux_armed": {}}
+        self._imw = imw
+
+        head = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG, height=56)
+        head.pack(side="top", fill="x", padx=10, pady=(10, 0))
+        head.pack_propagate(False)
+        tk.Label(head, text="IMAGE MODELS", bg=PANEL,
+                 fg=GREEN,
+                 font=(FONT, 13, "bold")).pack(side="left",
+                                               padx=16, pady=14)
+        tk.Label(win, text="Everything for image generation: "
+                           "the engine, SD checkpoints, VAE "
+                           "encoders and LoRAs - downloaded "
+                           "into the app's own folders, or used "
+                           "in place from folders you link (a "
+                           "ComfyUI models folder classifies "
+                           "itself: checkpoints, vae and loras "
+                           "subfolders are recognised).",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=540).pack(anchor="w", padx=14,
+                                      pady=(10, 4))
+
+        wrap = tk.Frame(win, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=10,
+                  pady=(2, 4))
+        canvas = tk.Canvas(wrap, bg=BG, bd=0,
+                           highlightthickness=0)
+        sb = RoundedScrollbar(wrap, command=canvas.yview,
+                              bg=BG)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", padx=(4, 0))
+        canvas.pack(side="left", fill="both", expand=True)
+        flow = tk.Frame(canvas, bg=BG)
+        flow_win = canvas.create_window((0, 0), window=flow,
+                                        anchor="nw")
+        flow.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(
+            flow_win, width=e.width))
+
+        def wheel(e):
+            if e.num == 4:
+                canvas.yview_scroll(-3, "units")
+            elif e.num == 5:
+                canvas.yview_scroll(3, "units")
+            else:
+                canvas.yview_scroll(int(-e.delta / 40) or
+                                    (-3 if e.delta > 0 else 3),
+                                    "units")
+            return "break"
+
+        def bind_wheel(w_):
+            w_.bind("<MouseWheel>", wheel)
+            w_.bind("<Button-4>", wheel)
+            w_.bind("<Button-5>", wheel)
+            for c in w_.winfo_children():
+                bind_wheel(c)
+
+        imw["bind_wheel"] = bind_wheel
+        bind_wheel(sb)
+
+        tk.Label(flow, text="ENGINE", bg=BG, fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w",
+                                              padx=6,
+                                              pady=(8, 4))
+        imw["img_engine"] = tk.Label(flow, text="", bg=BG,
+                                     fg=GREEN_DIM,
+                                     font=(FONT, 9),
+                                     justify="left",
+                                     wraplength=500)
+        imw["img_engine"].pack(anchor="w", padx=6)
+        fbrow = tk.Frame(flow, bg=BG)
+        fbrow.pack(fill="x", padx=6, pady=(4, 0))
+        imw["fb_label"] = tk.Label(fbrow, text="", bg=BG,
+                                   fg=GREEN_DIM, font=(FONT, 9),
+                                   justify="left", wraplength=380)
+        imw["fb_label"].pack(side="left")
+        imw["fb_btn"] = RoundedButton(
+            fbrow, text="Retry GPU build", kind="ghost",
+            font=(FONT, 9, "bold"), bg=BG,
+            command=lambda: self._imw_fb_retry(imw))
+        imw["fb_btn"].pack(side="right")
+
+        tk.Label(flow, text="SD MODELS", bg=BG, fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w",
+                                              padx=6,
+                                              pady=(14, 4))
+        tk.Label(flow, text="The baseline is required; the "
+                            "rest are optional downloads into "
+                            "the app's own folder.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=500).pack(anchor="w", padx=6)
+        imw["img_rows_frame"] = tk.Frame(flow, bg=BG)
+        imw["img_rows_frame"].pack(fill="x")
+
+        tk.Label(flow, text="VAE ENCODERS", bg=BG,
+                 fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w",
+                                              padx=6,
+                                              pady=(14, 4))
+        tk.Label(flow, text="A VAE turns the model's latent "
+                            "image into pixels. Pick one in "
+                            "the studio's VAE picker; 'Built-in' "
+                            "uses the one inside the checkpoint.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=500).pack(anchor="w", padx=6)
+        imw["vae_frame"] = tk.Frame(flow, bg=BG)
+        imw["vae_frame"].pack(fill="x")
+
+        tk.Label(flow, text="LORAS", bg=BG, fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w",
+                                              padx=6,
+                                              pady=(14, 4))
+        tk.Label(flow, text="LoRAs steer a model toward a "
+                            "style or a subject. In the "
+                            "studio, Insert… on the LoRA row "
+                            "adds a <lora:name:0.8> tag to "
+                            "your prompt.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=500).pack(anchor="w", padx=6)
+        imw["lora_frame"] = tk.Frame(flow, bg=BG)
+        imw["lora_frame"].pack(fill="x")
+
+        tk.Label(flow, text="SEARCH HUGGING FACE", bg=BG,
+                 fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w",
+                                              padx=6,
+                                              pady=(14, 4))
+        imw["kind_frame"] = tk.Frame(flow, bg=BG)
+        imw["kind_frame"].pack(anchor="w", padx=6, pady=(0, 4))
+        isbar = tk.Frame(flow, bg=BG)
+        isbar.pack(fill="x", padx=4)
+        iswrap = BubbleFrame(isbar, fill=PANEL2,
+                             outline=BORDER, radius=11, bg=BG)
+        iswrap.pack(side="left", fill="x", expand=True)
+        imw["ihf_entry"] = tk.Entry(iswrap, bg=PANEL2,
+                                    fg=GREEN,
+                                    insertbackground=ORANGE,
+                                    bd=0, highlightthickness=0,
+                                    font=(FONT, 10))
+        imw["ihf_entry"].pack(fill="x", padx=10, pady=6)
+        imw["ihf_entry"].bind("<Return>",
+                              lambda e: self._ihf_go(imw))
+        imw["ihf_btn"] = RoundedButton(
+            isbar, text="Search", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._ihf_go(imw))
+        imw["ihf_btn"].pack(side="right", padx=(8, 0))
+        imw["ihf_frame"] = tk.Frame(flow, bg=BG)
+        imw["ihf_frame"].pack(fill="x")
+
+        tk.Label(flow, text="IMAGE FOLDERS", bg=BG,
+                 fg=ORANGE_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w",
+                                              padx=6,
+                                              pady=(14, 4))
+        tk.Label(flow, text="Folders scanned for image "
+                            "files, used in place where they "
+                            "already live - nothing is copied.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left",
+                 wraplength=500).pack(anchor="w", padx=6)
+        imw["img_loc_frame"] = tk.Frame(flow, bg=BG)
+        imw["img_loc_frame"].pack(fill="x")
+
+        bind_wheel(canvas)
+        bind_wheel(flow)
+
+        imw["note"] = tk.Label(win, text="", bg=BG,
+                               fg=ORANGE_DIM, font=(FONT, 9),
+                               justify="left", wraplength=540)
+        imw["note"].pack(anchor="w", padx=14, pady=(0, 10))
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: self._imw_close(imw))
+        self._ihf_kind_render(imw)
+        self._imgmdl_render(imw)
+        self._imw_drain(imw)
+
+    def _imw_close(self, imw):
+        if self._imw is not imw:
+            return
+        self._imw = None
+        # A running download is NOT cancelled: it lives on
+        # the app (self._fdl) and finishes with this window
+        # closed.
+        if imw.get("drain_id"):
+            try:
+                self.root.after_cancel(imw["drain_id"])
+            except Exception:
+                pass
+        try:
+            imw["win"].destroy()
+        except Exception:
+            pass
+
+    def _imw_drain(self, imw):
+        if self._imw is not imw:
+            return
+        try:
+            while True:
+                kind, payload = imw["queue"].get_nowait()
+                if kind == "ihf_results":
+                    self._ihf_render(imw, payload)
+                    imw["note"].configure(
+                        text="%d downloadable file(s) found."
+                             % len(payload))
+                elif kind == "ihf_error":
+                    imw["ihf_btn"].set_enabled(True)
+                    imw["note"].configure(
+                        text="Hugging Face search failed: %s"
+                             % payload)
+        except queue.Empty:
+            pass
+        self._imgmdl_poll(imw)
+        imw["drain_id"] = self.root.after(
+            120, lambda: self._imw_drain(imw))
 
     # ---- Hugging Face search ----------------------------------
     # GGUF repos from Hugging Face's public API (no account, no
@@ -6218,7 +6867,6 @@ class App:
             pass
         self._mdl_sync_pull(mdl)
         self._mdl_render_download(mdl)
-        self._imgmdl_poll(mdl)
         mdl["drain_id"] = self.root.after(90,
                                           lambda: self._mdl_drain(mdl))
 

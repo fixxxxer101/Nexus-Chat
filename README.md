@@ -8,16 +8,21 @@ machine — no accounts, no cloud, nothing leaves the Pi.
 
 - **Image generation.** A Chat / Image switch in the sidebar
   opens the image studio: prompt and negative prompt, size,
-  steps, CFG, sampler and seed, live progress, and a history
-  of everything generated, each with its settings saved. The
-  engine is sd-cli (stable-diffusion.cpp) — one standalone
-  program, no ComfyUI, no Python stack — and setup installs
-  the build that matches your GPU (CUDA for NVIDIA, Vulkan
-  for AMD/Intel, CPU fallback; built from source on Linux).
-  DreamShaper 8 is the required baseline model; the Model
-  Manager adds an optional catalog, Hugging Face search for
-  image checkpoints, and folders of checkpoints used in
-  place.
+  steps, CFG, sampler and seed (blank means random), live
+  progress, and a history of everything generated, each with
+  its settings saved. The engine is sd-cli
+  (stable-diffusion.cpp) — one standalone program, no
+  ComfyUI, no Python stack — and setup installs the build
+  that matches your GPU (CUDA for NVIDIA, Vulkan for
+  AMD/Intel; built from source on Linux) PLUS a CPU build
+  alongside it: if the GPU build crashes on your driver,
+  the app retries on the CPU build automatically and
+  remembers. DreamShaper 8 is the required baseline model.
+  Image Models has its own manager (Menu → Image Models…):
+  the optional checkpoint catalog, VAE encoders and LoRAs
+  (search Hugging Face by kind, or link folders — a
+  ComfyUI models folder classifies itself), a VAE picker
+  in the studio, and one-click LoRA tags in the prompt.
 - **Thinking traces, when the model thinks.** Qwen3 replies carry
   a saved thinking trace, shown as a collapsible **▸ Thinking**
   block — click to read exactly how the model reasoned, click

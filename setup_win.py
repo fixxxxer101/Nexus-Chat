@@ -281,47 +281,63 @@ def detect_gpu_backend():
     return "cpu"
 
 
+def _install_sd_build(backend, dest_dir):
+    """Download one sd-cli build's zip(s), find sd-cli.exe
+    in the extract and copy its whole folder into dest_dir
+    (the builds ship their DLLs beside the exe, and builds
+    must never share a folder - their DLLs differ)."""
+    tmp = os.path.join(DATA_DIR, "sd-download")
+    try:
+        os.makedirs(tmp, exist_ok=True)
+        for z in SD_ZIPS[backend]:
+            zp = os.path.join(tmp, z)
+            download_file(
+                "https://github.com/leejet/"
+                "stable-diffusion.cpp/releases/download/"
+                "%s/%s" % (SD_RELEASE, z), zp, z)
+            with zipfile.ZipFile(zp) as zf:
+                zf.extractall(tmp)
+        found = None
+        for root, _dirs, files in os.walk(tmp):
+            if "sd-cli.exe" in files:
+                found = root
+                break
+        if not found:
+            return False
+        os.makedirs(dest_dir, exist_ok=True)
+        for fn in os.listdir(found):
+            srcp = os.path.join(found, fn)
+            if os.path.isfile(srcp):
+                shutil.copyfile(
+                    srcp, os.path.join(dest_dir, fn))
+        return os.path.isfile(os.path.join(dest_dir,
+                                           "sd-cli.exe"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def install_image_engine():
     sd_dir = os.path.join(DATA_DIR, "sd")
     cli = os.path.join(sd_dir, "sd-cli.exe")
+    backend = None
     if os.path.isfile(cli):
+        if os.path.isfile(os.path.join(sd_dir, "backend.txt")):
+            backend = open(
+                os.path.join(sd_dir, "backend.txt")).read() \
+                .strip()
         say("Image engine already installed (%s)."
-            % (open(os.path.join(sd_dir, "backend.txt")).read()
-               .strip() if os.path.isfile(
-                   os.path.join(sd_dir, "backend.txt"))
-               else "unknown build"))
+            % (backend or "unknown build"))
     else:
         backend = detect_gpu_backend()
         say("Image engine: installing the %s build of sd-cli "
             "(%s), matched to this machine's GPU..."
             % (backend, SD_RELEASE))
-        tmp = os.path.join(DATA_DIR, "sd-download")
         try:
-            os.makedirs(tmp, exist_ok=True)
-            for z in SD_ZIPS[backend]:
-                zp = os.path.join(tmp, z)
-                download_file(
-                    "https://github.com/leejet/"
-                    "stable-diffusion.cpp/releases/download/"
-                    "%s/%s" % (SD_RELEASE, z), zp, z)
-                with zipfile.ZipFile(zp) as zf:
-                    zf.extractall(tmp)
-            found = None
-            for root, _dirs, files in os.walk(tmp):
-                if "sd-cli.exe" in files:
-                    found = root
-                    break
-            if not found:
+            if not _install_sd_build(backend, sd_dir):
                 say("Image engine: sd-cli.exe was not in the "
                     "download - image generation not "
                     "installed; chat is unaffected.")
                 return
-            os.makedirs(sd_dir, exist_ok=True)
-            for fn in os.listdir(found):
-                srcp = os.path.join(found, fn)
-                if os.path.isfile(srcp):
-                    shutil.copyfile(
-                        srcp, os.path.join(sd_dir, fn))
             with open(os.path.join(sd_dir, "backend.txt"),
                       "w") as f:
                 f.write(backend)
@@ -331,8 +347,30 @@ def install_image_engine():
             say("Image engine install failed: %s - chat is "
                 "unaffected; re-run setup to retry." % e)
             return
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+    # The CPU fallback: a GPU build can crash on a machine's
+    # driver (seen live on a Radeon 780M - the Vulkan build
+    # died right after loading the model). The app retries
+    # on the CPU build automatically when that happens, so
+    # it must be here BEFORE it is needed.
+    if backend and backend != "cpu":
+        fb = os.path.join(sd_dir, "cpu", "sd-cli.exe")
+        if os.path.isfile(fb):
+            say("Image engine CPU fallback already installed.")
+        else:
+            say("Image engine: installing the CPU fallback "
+                "build alongside it...")
+            try:
+                if _install_sd_build(
+                        "cpu", os.path.join(sd_dir, "cpu")):
+                    say("CPU fallback build installed.")
+                else:
+                    say("CPU fallback: sd-cli.exe was not in "
+                        "the download - skipped; the %s "
+                        "build still works." % backend)
+            except Exception as e:
+                say("CPU fallback install failed: %s - "
+                    "skipped; the %s build still works."
+                    % (e, backend))
     models_dir = os.path.join(DATA_DIR, "image-models")
     dest = os.path.join(models_dir, IMG_BASELINE_FILE)
     if os.path.isfile(dest) and \
@@ -360,9 +398,8 @@ def install_image_engine():
             "verified.")
     except Exception as e:
         say("Baseline image model download failed: %s - it "
-            "can also be downloaded inside the app (Model "
-            "Manager, Image models). Re-run setup to retry."
-            % e)
+            "can also be downloaded inside the app (Menu -> "
+            "Image Models). Re-run setup to retry." % e)
 
 
 def main():

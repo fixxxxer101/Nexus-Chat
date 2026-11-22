@@ -5,6 +5,37 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.28.0 — 2026-11-21
+Three live reports from the first real image run, fixed:
+leaving the seed blank crashed generation (a missing
+import behind the random-seed path) - blank now means
+random, and the seed used is recorded as before; a mode
+switch could leave the sidebar card's outline drawn at
+a mid-relayout size on Windows - every layout card now
+re-settles after a switch; and the Vulkan engine build
+crashed on a Radeon 780M right after loading the model
+(code 3221226505) - setup now also installs the CPU
+build alongside any GPU build, and when a generation
+dies the app retries it once on the CPU build,
+remembers the fallback (the engine line says so), and
+Image Models offers "Retry GPU build" to try the GPU
+again. Image models also get their OWN manager, as
+asked (Menu → Image Models…; the studio button opens it
+too, and the chat Model Manager is chat-only again):
+it manages SD checkpoints, VAE encoders and LoRAs -
+Hugging Face search by kind (models / VAEs / LoRAs,
+each with its own file rules and download folder),
+linked folders classified by their layout (a ComfyUI
+models folder's checkpoints / vae / loras subfolders
+are recognised), downloaded VAEs and LoRAs listed with
+delete. The studio gains a VAE picker (Built-in = the
+checkpoint's own) passed to the engine as --vae, and a
+LoRA Insert… that drops a <lora:name:0.8> tag into the
+prompt; the runner stages the named LoRAs from wherever
+they live into one folder for the engine's
+--lora-model-dir. Generation records now include the
+VAE, and picking a history entry restores it.
+
 ## 1.27.0 — 2026-11-21
 Image generation: a Chat / Image switch at the top of
 the sidebar. The Image studio generates pictures with
