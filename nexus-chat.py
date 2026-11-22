@@ -70,7 +70,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -738,6 +738,15 @@ def ctl_service(action):
 
 def gb(nbytes):
     return "%.1f GB" % (nbytes / 1e9)
+
+
+def fmt_speed(bps):
+    mb = bps / 1e6
+    if mb >= 100:
+        return "%.0f MB/s" % mb
+    if mb >= 1:
+        return "%.1f MB/s" % mb
+    return "%.0f KB/s" % (bps / 1e3)
 
 
 # ---------------------------------------------------------------- GUI
@@ -1917,6 +1926,33 @@ class App:
                                           self._hf_go(mdl))
         mdl["hf_btn"].pack(side="right", padx=(8, 0))
 
+        # Downloads strip, pinned to the base of the window:
+        # whatever is downloading (catalog or Hugging Face),
+        # its percent, speed and time left - always visible,
+        # no searching or scrolling to find it again.
+        dl = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                         radius=RADIUS_CARD, bg=BG)
+        dl.pack(side="bottom", fill="x", padx=10, pady=(4, 10))
+        tk.Label(dl, text="DOWNLOADING", bg=PANEL,
+                 fg=ORANGE_DIM, font=(FONT, 8, "bold")).pack(
+                     anchor="w", padx=12, pady=(8, 0))
+        mdl["dl_tag"] = tk.Label(dl, text="No downloads running",
+                                 bg=PANEL, fg=GREEN_DIM,
+                                 font=(FONT, 10, "bold"),
+                                 anchor="w")
+        mdl["dl_tag"].pack(anchor="w", padx=12, fill="x")
+        mdl["dl_bar"] = tk.Canvas(dl, height=10, bg=PANEL, bd=0,
+                                  highlightthickness=0)
+        mdl["dl_bar"].pack(fill="x", padx=12, pady=(4, 2))
+        mdl["dl_bar"].bind("<Configure>",
+                           lambda e: self._mdl_draw_bar(mdl))
+        mdl["dl_detail"] = tk.Label(dl, text="", bg=PANEL,
+                                    fg=GREEN_DIM, font=(FONT, 8),
+                                    anchor="w")
+        mdl["dl_detail"].pack(anchor="w", padx=12, pady=(0, 8),
+                              fill="x")
+        mdl["dl_frac"] = 0.0
+
         wrap = tk.Frame(win, bg=BG)
         wrap.pack(fill="both", expand=True, padx=10, pady=(2, 4))
         canvas = tk.Canvas(wrap, bg=BG, bd=0, highlightthickness=0)
@@ -2333,7 +2369,7 @@ class App:
             return
         pull = {"tag": row["tag"], "resp": None,
                 "cancelled": False, "done": 0, "total": 0,
-                "status": "starting"}
+                "status": "starting", "speed": 0.0}
         self._pull = pull
         mdl["busy"] = row
         row["state"] = "busy"
@@ -2384,6 +2420,17 @@ class App:
                     pull["total"] = sum(t for _, t in
                                         layers.values())
                     pull["status"] = ev.get("status", "")
+                    now = time.time()
+                    lt, ld = pull.get("_t"), pull.get("_d", 0)
+                    if lt is not None and now - lt >= 0.25 \
+                            and pull["done"] >= ld:
+                        inst = (pull["done"] - ld) / (now - lt)
+                        pull["speed"] = \
+                            inst if not pull.get("speed") else \
+                            0.8 * pull["speed"] + 0.2 * inst
+                        pull["_t"], pull["_d"] = now, pull["done"]
+                    elif lt is None:
+                        pull["_t"], pull["_d"] = now, pull["done"]
             finally:
                 try:
                     resp.close()
@@ -2429,6 +2476,52 @@ class App:
                                   / pull["total"]))
         mdl["note"].configure(text="%s - %s" % (
             pull["tag"], pull["status"] or "downloading"))
+
+    def _mdl_draw_bar(self, mdl):
+        bar = mdl["dl_bar"]
+        w = bar.winfo_width()
+        if w < 10:
+            return
+        bar.delete("all")
+        draw_beveled_rect(bar, 0, 0, w - 1, 9, 5, PANEL2, PANEL2)
+        frac = mdl.get("dl_frac", 0.0)
+        if frac > 0:
+            fw = max(int(w * frac), 10)
+            draw_beveled_rect(bar, 0, 0, fw - 1, 9, 5,
+                              GREEN, BEVEL_LIGHT)
+
+    def _mdl_render_download(self, mdl):
+        # The downloads strip at the window's base, rendered
+        # from the app-level pull every drain tick - visible
+        # the moment the manager opens, whatever section the
+        # download came from.
+        pull = self._pull
+        if pull is None:
+            mdl["dl_tag"].configure(text="No downloads running",
+                                    fg=GREEN_DIM)
+            mdl["dl_frac"] = 0.0
+            mdl["dl_detail"].configure(text="")
+        else:
+            mdl["dl_tag"].configure(text=pull["tag"], fg=GREEN)
+            total, done = pull["total"], pull["done"]
+            mdl["dl_frac"] = (done / total) if total else 0.0
+            parts = []
+            if total:
+                parts.append("%d%%" % int(100.0 * done / total))
+                parts.append("%s of %s" % (gb(done), gb(total)))
+            else:
+                parts.append(pull["status"] or "starting")
+            spd = pull.get("speed") or 0
+            if spd > 0 and total and done < total:
+                parts.append(fmt_speed(spd))
+                rem = (total - done) / spd
+                if rem >= 90:
+                    parts.append("~%d min left"
+                                 % int(round(rem / 60)))
+                elif rem > 5:
+                    parts.append("~%d sec left" % int(rem))
+            mdl["dl_detail"].configure(text=" - ".join(parts))
+        self._mdl_draw_bar(mdl)
 
     def _mdl_drain(self, mdl):
         if self._mdl is not mdl:
@@ -2530,6 +2623,7 @@ class App:
         except queue.Empty:
             pass
         self._mdl_sync_pull(mdl)
+        self._mdl_render_download(mdl)
         mdl["drain_id"] = self.root.after(90,
                                           lambda: self._mdl_drain(mdl))
 

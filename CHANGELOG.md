@@ -5,6 +5,15 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.14.0 — 2026-11-21
+A downloads strip pinned to the base of the Model Manager:
+whatever is downloading right now - catalog or Hugging
+Face - with a progress bar, percent, downloaded / total,
+live speed and estimated time left, rendered from the
+app-level download state. Open the manager and it's just
+there; no searching or scrolling to find your download
+again. When nothing is running it says so.
+
 ## 1.13.0 — 2026-11-21
 Three additions. (1) Hugging Face search in the Model
 Manager: search GGUF repos by name or keyword, get the top
