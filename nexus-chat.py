@@ -79,7 +79,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.31.0"
+VERSION = "1.32.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -2661,6 +2661,7 @@ class App:
                                        # "job" (live generation),
                                        # "record" (a saved image),
                                        # "new" (blank composer)
+        self._fs = None                # fullscreen image view
         self._img_photo = None         # studio's shown PhotoImage
         self._img_current = None       # generation record shown
         self.img_model_path = None     # studio's picked model
@@ -2785,45 +2786,54 @@ class App:
         self.pills = tk.Frame(side, bg=PANEL)
         self.pills.pack(fill="x", padx=12, pady=(12, 0))
         self._render_pills()
+        # The two mode containers are inset 6px inside the
+        # card: packed flush, their flat PANEL background
+        # paints OVER the card's outline on Windows (the
+        # edge line lives on the canvas beneath them) -
+        # the sidebar's left/right/bottom edges vanished.
+        # Their children's own padding is reduced by the
+        # same 6, so the content lands exactly where it
+        # always did.
         self.side_chat = tk.Frame(side, bg=PANEL)
-        self.side_chat.pack(fill="both", expand=True)
+        self.side_chat.pack(fill="both", expand=True,
+                            padx=6, pady=(0, 6))
         RoundedButton(self.side_chat, text="+  New Chat",
                       kind="primary",
                       bg=PANEL, font=(FONT, 11, "bold"), pady=8,
-                      command=self.new_chat).pack(fill="x", padx=12,
+                      command=self.new_chat).pack(fill="x", padx=6,
                                                   pady=12)
         self.chat_list = tk.Listbox(
             self.side_chat, bg=PANEL, fg=GREEN,
             selectbackground="#17351f",
             selectforeground=GREEN, bd=0, highlightthickness=0,
             font=(FONT, 10), activestyle="none")
-        self.chat_list.pack(fill="both", expand=True, padx=8)
+        self.chat_list.pack(fill="both", expand=True, padx=2)
         self.chat_list.bind("<<ListboxSelect>>",
                             self._sidebar_pick)
         RoundedButton(self.side_chat, text="Delete chat",
                       kind="quiet",
                       bg=PANEL, font=(FONT, 9),
                       command=self.delete_current
-                      ).pack(fill="x", padx=12, pady=(12, 12))
+                      ).pack(fill="x", padx=6, pady=(12, 12))
         self.side_img = tk.Frame(side, bg=PANEL)
         RoundedButton(self.side_img, text="+  New Image",
                       kind="primary",
                       bg=PANEL, font=(FONT, 11, "bold"), pady=8,
-                      command=self._img_new).pack(fill="x", padx=12,
+                      command=self._img_new).pack(fill="x", padx=6,
                                                   pady=12)
         self.img_list = tk.Listbox(
             self.side_img, bg=PANEL, fg=GREEN,
             selectbackground="#17351f",
             selectforeground=GREEN, bd=0, highlightthickness=0,
             font=(FONT, 10), activestyle="none")
-        self.img_list.pack(fill="both", expand=True, padx=8)
+        self.img_list.pack(fill="both", expand=True, padx=2)
         self.img_list.bind("<<ListboxSelect>>",
                            self._img_sidebar_pick)
         self.img_del_btn = RoundedButton(
             self.side_img, text="Delete image", kind="quiet",
             bg=PANEL, font=(FONT, 9),
             command=self._img_delete)
-        self.img_del_btn.pack(fill="x", padx=12, pady=(12, 12))
+        self.img_del_btn.pack(fill="x", padx=6, pady=(12, 12))
 
         # The chat lives in its own card, a sibling of the
         # sidebar card: same fill, same padding, tops aligned,
@@ -3969,7 +3979,8 @@ class App:
         if mode == "chat":
             self.side_img.pack_forget()
             self.img_card.pack_forget()
-            self.side_chat.pack(fill="both", expand=True)
+            self.side_chat.pack(fill="both", expand=True,
+                                padx=6, pady=(0, 6))
             self.main_card.pack(side="left", fill="both",
                                 expand=True, padx=(10, 10),
                                 pady=10)
@@ -3978,8 +3989,11 @@ class App:
         else:
             self.side_chat.pack_forget()
             self.main_card.pack_forget()
+            # (container insets: see _build_layout - flush
+            # containers paint over the card outline)
             self.bar.pack_forget()
-            self.side_img.pack(fill="both", expand=True)
+            self.side_img.pack(fill="both", expand=True,
+                               padx=6, pady=(0, 6))
             self.img_card.pack(side="left", fill="both",
                                expand=True, padx=(10, 10),
                                pady=10)
@@ -4054,6 +4068,10 @@ class App:
             text="Write a prompt below and press Generate.\n"
                  "Past images live in the list on the left.")
         iw["view"].pack(expand=True)
+        # Click a shown image: fullscreen. Click again (or
+        # Esc): back to normal.
+        iw["view"].bind("<Button-1>",
+                        lambda e: self._img_open_fullscreen())
         iw["bar"] = tk.Canvas(inner, height=8, bg=PANEL2, bd=0,
                               highlightthickness=0)
         iw["bar"].pack(fill="x")
@@ -4565,22 +4583,115 @@ class App:
                                      job["seed"]))
         self._img_bar(1.0)
 
-    def _img_show(self, path):
-        iw = self._imgw
+    def _fit_photo(self, path, max_w, max_h):
+        """A PhotoImage of the file fitted into the box:
+        subsampled down when too big, zoomed up (integer
+        factors only - that's what Tk offers) when small.
+        None when the file can't be read as an image."""
         try:
             img = self.tk.PhotoImage(file=path)
-        except Exception as e:
-            iw["status"].configure(
-                text="Cannot display that image: %s" % e)
-            return
-        factor = 1
-        while img.width() // factor > 900 or \
-                img.height() // factor > 520:
-            factor += 1
-        if factor > 1:
+        except Exception:
+            return None
+        w, h = img.width(), img.height()
+        if w > max_w or h > max_h:
+            factor = 1
+            while w // factor > max_w or \
+                    h // factor > max_h:
+                factor += 1
             img = img.subsample(factor)
+        elif w < max_w and h < max_h:
+            factor = min(max_w // max(w, 1),
+                         max_h // max(h, 1))
+            if factor > 1:
+                img = img.zoom(factor)
+        return img
+
+    def _img_show(self, path):
+        iw = self._imgw
+        img = self._fit_photo(path, 900, 520)
+        if img is None:
+            iw["status"].configure(
+                text="Cannot display that image.")
+            return
         self._img_photo = img
-        iw["view"].configure(image=img, text="")
+        iw["view"].configure(image=img, text="",
+                             cursor="hand2")
+
+    # ---- fullscreen image view -------------------------
+    def _img_open_fullscreen(self):
+        rec = self._img_current
+        if not rec or rec.get("pending"):
+            return
+        path = os.path.join(IMG_DIR, rec.get("file") or "")
+        if not os.path.isfile(path):
+            return
+        self._img_close_fullscreen()
+        tk = self.tk
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        win = tk.Toplevel(self.root)
+        win.configure(bg=BG)
+        win.geometry("%dx%d+0+0" % (sw, sh))
+        try:
+            win.attributes("-fullscreen", True)
+        except Exception:
+            pass
+        img = self._fit_photo(path, sw - 24, sh - 150)
+        if img is None:
+            win.destroy()
+            return
+        lbl = tk.Label(win, image=img, bg=BG)
+        lbl.pack(expand=True)
+        lbl.bind("<Button-1>",
+                 lambda e: self._img_close_fullscreen())
+        bar = tk.Frame(win, bg=PANEL)
+        bar.pack(side="bottom", fill="x")
+        txt = tk.Frame(bar, bg=PANEL)
+        txt.pack(side="left", fill="x", expand=True,
+                 padx=14, pady=8)
+        tk.Label(txt, text=rec.get("prompt") or "",
+                 bg=PANEL, fg=GREEN, font=(FONT, 11),
+                 wraplength=sw - 340, justify="left",
+                 anchor="w").pack(fill="x")
+        meta = self._img_recipe_text(rec)
+        neg = (rec.get("negative") or "").strip()
+        if neg:
+            meta += "  ·  negative: %s" % neg[:80]
+        meta += "  ·  %s" % rec.get("file", "")
+        tk.Label(txt, text=meta, bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9), wraplength=sw - 340,
+                 justify="left", anchor="w").pack(fill="x",
+                                                  pady=(3, 0))
+        btns = tk.Frame(bar, bg=PANEL)
+        btns.pack(side="right", padx=14, pady=8)
+        RoundedButton(btns, text="Use settings",
+                      kind="primary", bg=PANEL,
+                      font=(FONT, 10, "bold"), pady=6,
+                      command=self._fs_use_settings).pack(
+                          side="left")
+        RoundedButton(btns, text="Close", kind="quiet",
+                      bg=PANEL, font=(FONT, 10), pady=6,
+                      command=self._img_close_fullscreen
+                      ).pack(side="left", padx=(8, 0))
+        win.bind("<Escape>",
+                 lambda e: self._img_close_fullscreen())
+        self._fs = {"win": win, "photo": img, "rec": rec}
+        win.focus_set()
+
+    def _img_close_fullscreen(self):
+        if self._fs:
+            try:
+                self._fs["win"].destroy()
+            except Exception:
+                pass
+            self._fs = None
+
+    def _fs_use_settings(self):
+        rec = (self._fs or {}).get("rec")
+        self._img_close_fullscreen()
+        if rec:
+            self._img_current = rec
+            self._img_use_current_settings()
 
     def _img_refresh_keep_sel(self, shift=0):
         """History refresh that keeps the user's place in
@@ -4731,7 +4842,7 @@ class App:
             iw["view"].configure(
                 image="", text="Generating…\nThe picture "
                                "fills in here when it's "
-                               "done.")
+                               "done.", cursor="")
             iw["status"].configure(
                 text=job.get("last_status",
                              "Loading the model…"))
@@ -4764,7 +4875,7 @@ class App:
         iw["view"].configure(
             image="", text="Write a prompt below and press "
                            "Generate.\nPast images live in "
-                           "the list on the left.")
+                           "the list on the left.", cursor="")
         self.img_list.selection_clear(0, "end")
 
     def _img_delete(self):

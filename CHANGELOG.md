@@ -5,6 +5,23 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.32.0 — 2026-11-22
+Two things. (1) The sidebar outline is fixed at the
+root: the sidebar's Chat/Image containers were packed
+flush against the card, and their flat background
+painted over the card's outline where they touched it
+- on Windows that ate the left, right and bottom edges
+entirely (Clint's annotated screenshot). The containers
+now sit inset inside the card like every other card's
+content, with their children's padding reduced by the
+same amount so nothing on screen moves. (2) Click a
+shown image and it opens fullscreen - the picture big,
+with its metadata along the bottom: the prompt, the
+full recipe (model, size, steps, CFG, sampler, seed,
+VAE, negative, filename) and a Use settings button
+that loads the recipe and returns to the studio.
+Click the picture again (or Close, or Esc) to go back.
+
 ## 1.31.0 — 2026-11-22
 A running generation is always visible (Clint's
 report: start one, click an earlier image, and the run
