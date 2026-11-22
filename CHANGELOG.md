@@ -5,6 +5,26 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.30.0 — 2026-11-22
+Images carry their own recipes (Clint's ask): every
+generation now embeds its full settings INSIDE the PNG
+file itself - prompt, negative prompt, model, size,
+steps, CFG, sampler, the VAE, and the seed that was
+actually used, as readable PNG metadata fields plus an
+exact JSON recipe - so the picture explains how it was
+made wherever it goes, long after any sidecar is gone.
+The sidecar stays as the fast local index, and a PNG
+whose sidecar is missing rejoins the history list from
+its own embedded recipe. Under the displayed image, a
+recipe line (model · size · steps · CFG · sampler ·
+seed) appears with a Use settings button that loads
+everything back into the studio - one click to recreate
+an image. And the seed rule is now airtight: blank
+means random, the drawn seed is written into the seed
+box when the generation finishes, recorded in the
+sidecar AND the PNG metadata, and transferred by Use
+settings - a random image is exactly reproducible.
+
 ## 1.29.0 — 2026-11-22
 Error Log window (Menu → Error Log…), at Clint's ask:
 shows the app's log file (path printed in the window),

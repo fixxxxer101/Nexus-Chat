@@ -69,6 +69,7 @@ import re
 import urllib.parse
 import urllib.request
 import urllib.error
+import zlib
 
 APP_NAME = "Nexus Gate"
 # The version, shown in the header and the window title. Bump it
@@ -78,7 +79,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.29.0"
+VERSION = "1.30.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1406,10 +1407,121 @@ def image_model_entries(settings):
     return out
 
 
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_text_chunk(keyword, text):
+    payload = keyword.encode("latin-1") + b"\x00" \
+        + text.encode("utf-8")
+    return struct.pack(">I", len(payload)) + b"tEXt" \
+        + payload + struct.pack(
+            ">I", zlib.crc32(b"tEXt" + payload) & 0xFFFFFFFF)
+
+
+def png_embed_text(path, items):
+    """Write (keyword, text) pairs into a PNG's own
+    metadata (tEXt chunks, inserted before the image
+    data), so the file itself carries how it was made.
+    True on success; a non-PNG or any failure is a quiet
+    False - embedding must never fail a generation."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        if not data.startswith(_PNG_SIG):
+            return False
+        parts = [data[:8]]
+        pos, inserted = 8, False
+        while pos + 8 <= len(data):
+            length = struct.unpack(
+                ">I", data[pos:pos + 4])[0]
+            ctype = data[pos + 4:pos + 8]
+            chunk = data[pos:pos + 12 + length]
+            if ctype == b"IDAT" and not inserted:
+                for k, v in items:
+                    parts.append(_png_text_chunk(k, v))
+                inserted = True
+            parts.append(chunk)
+            pos += 12 + length
+            if ctype == b"IEND":
+                break
+        if not inserted:
+            return False
+        with open(path, "wb") as f:
+            f.write(b"".join(parts))
+        return True
+    except Exception:
+        return False
+
+
+def png_read_text(path):
+    """A PNG's tEXt chunks as {keyword: text}."""
+    out = {}
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        if not data.startswith(_PNG_SIG):
+            return out
+        pos = 8
+        while pos + 8 <= len(data):
+            length = struct.unpack(
+                ">I", data[pos:pos + 4])[0]
+            ctype = data[pos + 4:pos + 8]
+            if ctype == b"tEXt":
+                payload = data[pos + 8:pos + 8 + length]
+                key, _sep, val = payload.partition(b"\x00")
+                out[key.decode("latin-1")] = \
+                    val.decode("utf-8", "replace")
+            pos += 12 + length
+            if ctype == b"IEND":
+                break
+    except Exception:
+        pass
+    return out
+
+
+def recipe_from_image(path):
+    """The generation record embedded in an image file,
+    if it carries one: the exact JSON recipe first, else
+    the individual metadata fields. None when the image
+    has no recipe."""
+    texts = png_read_text(path)
+    if not texts:
+        return None
+    raw = texts.get("Recipe")
+    if raw:
+        try:
+            rec = json.loads(raw)
+            if isinstance(rec, dict) and rec.get("prompt") \
+                    is not None:
+                return rec
+        except Exception:
+            pass
+    if "Prompt" not in texts:
+        return None
+    rec = {"prompt": texts.get("Prompt", ""),
+           "negative": texts.get("Negative prompt", ""),
+           "model": texts.get("Model", ""),
+           "model_file": texts.get("Model file", ""),
+           "size": texts.get("Size", "512x512"),
+           "sampler": texts.get("Sampler", "euler_a")}
+    for key, field, cast in (("Steps", "steps", int),
+                             ("CFG", "cfg", float),
+                             ("Seed", "seed", int)):
+        try:
+            rec[field] = cast(texts[key])
+        except Exception:
+            rec[field] = 20 if field == "steps" else 7.0
+    return rec
+
+
 def list_generations():
     """Saved generations, newest first: the sidecar JSON
-    records written next to each PNG in IMG_DIR."""
+    records written next to each PNG in IMG_DIR. A PNG
+    whose sidecar is gone still joins the list when the
+    image itself carries its recipe (the metadata is the
+    record of last resort)."""
     out = []
+    covered = set()
     if os.path.isdir(IMG_DIR):
         for fn in os.listdir(IMG_DIR):
             if not fn.endswith(".json"):
@@ -1420,8 +1532,24 @@ def list_generations():
                 if os.path.isfile(
                         os.path.join(IMG_DIR, rec["file"])):
                     out.append(rec)
+                    covered.add(rec["file"])
             except Exception:
                 continue
+        for fn in sorted(os.listdir(IMG_DIR)):
+            if not fn.lower().endswith(".png") \
+                    or fn in covered:
+                continue
+            path = os.path.join(IMG_DIR, fn)
+            rec = recipe_from_image(path)
+            if rec is None:
+                continue
+            rec["file"] = fn
+            rec.setdefault("created",
+                           os.path.getmtime(path))
+            rec.setdefault("model_path", "")
+            rec.setdefault("vae", "")
+            rec.setdefault("vae_path", "")
+            out.append(rec)
     out.sort(key=lambda r: r.get("created", 0), reverse=True)
     return out
 
@@ -3922,6 +4050,20 @@ class App:
         iw["bar"] = tk.Canvas(inner, height=8, bg=PANEL2, bd=0,
                               highlightthickness=0)
         iw["bar"].pack(fill="x")
+        # The recipe row: shown while a saved image is on
+        # screen - what made it, and the button that loads
+        # those settings back into the studio.
+        iw["recipe_row"] = tk.Frame(inner, bg=PANEL)
+        iw["recipe_lbl"] = tk.Label(
+            iw["recipe_row"], text="", bg=PANEL, fg=GREEN_DIM,
+            font=(FONT, 9), anchor="w")
+        iw["recipe_lbl"].pack(side="left", fill="x",
+                              expand=True)
+        RoundedButton(iw["recipe_row"], text="Use settings",
+                      kind="primary", font=(FONT, 10, "bold"),
+                      bg=PANEL,
+                      command=self._img_use_current_settings
+                      ).pack(side="right")
         iw["status"] = tk.Label(inner, text="", bg=PANEL,
                                 fg=GREEN, font=(FONT, 9),
                                 anchor="w")
@@ -4218,12 +4360,14 @@ class App:
         except ValueError:
             cfg = 7.0
         seed_txt = iw["seed"].get().strip()
+        seed_random = False
         try:
             seed = int(seed_txt)
             if seed < 0:
                 raise ValueError
         except ValueError:
             seed = random.randint(0, 2 ** 31 - 1)
+            seed_random = True
         os.makedirs(IMG_DIR, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         out = os.path.join(IMG_DIR, "img-%s.png" % stamp)
@@ -4240,7 +4384,8 @@ class App:
                "prompt": prompt,
                "negative": iw["negative"].get().strip(),
                "steps": steps, "cfg": cfg, "size": self._img_size,
-               "seed": seed, "sampler": self._img_sampler,
+               "seed": seed, "seed_random": seed_random,
+               "sampler": self._img_sampler,
                "out": out, "proc": None, "cancelled": False,
                "started": time.time(),
                "cli": self._sd_effective(),
@@ -4334,6 +4479,28 @@ class App:
                if job.get("vae") else "",
                "vae_path": job.get("vae") or "",
                "created": time.time()}
+        # The recipe goes INSIDE the image file itself
+        # (PNG metadata), so the picture carries how it was
+        # made wherever it goes - the sidecar below is the
+        # fast local index, the metadata is the record that
+        # travels. The seed recorded is the one actually
+        # used, random draws included.
+        items = [("Software", "%s %s" % (APP_NAME, VERSION)),
+                 ("Prompt", rec["prompt"]),
+                 ("Negative prompt", rec["negative"]),
+                 ("Model", rec["model"]),
+                 ("Model file", rec["model_file"]),
+                 ("Size", rec["size"]),
+                 ("Steps", str(rec["steps"])),
+                 ("CFG", str(rec["cfg"])),
+                 ("Sampler", rec["sampler"]),
+                 ("Seed", str(rec["seed"])),
+                 ("Recipe", json.dumps(rec))]
+        if rec["vae"]:
+            items.insert(9, ("VAE", rec["vae"]))
+        if not png_embed_text(job["out"], items):
+            log("image metadata embed failed for %s"
+                % rec["file"])
         try:
             with open(os.path.join(
                     IMG_DIR, rec["file"] + ".json"), "w") as f:
@@ -4341,8 +4508,15 @@ class App:
         except OSError:
             pass
         self._img_current = rec
+        if job.get("seed_random"):
+            # Show the seed that actually made this image -
+            # blank meant random, and the drawn seed is now
+            # the seed of record everywhere.
+            iw["seed"].delete(0, "end")
+            iw["seed"].insert(0, str(job["seed"]))
         self._img_history_refresh(select=rec["file"])
         self._img_show(job["out"])
+        self._img_recipe_show(rec)
         took = int(time.time() - job["started"])
         iw["status"].configure(
             text="Done in %dm %02ds - seed %d. Saved to the "
@@ -4382,12 +4556,33 @@ class App:
                 self.img_list.selection_set(i)
                 self.img_list.see(i)
 
-    def _img_sidebar_pick(self, _e=None):
-        sel = self.img_list.curselection()
-        if not sel:
-            return
-        rec = self._img_records[sel[0]]
-        self._img_current = rec
+    def _img_recipe_text(self, rec):
+        txt = "%s · %s · %s steps · CFG %s · %s · seed %s" % (
+            rec.get("model", ""), rec.get("size", ""),
+            rec.get("steps", ""), rec.get("cfg", ""),
+            rec.get("sampler", ""), rec.get("seed", ""))
+        if rec.get("vae"):
+            txt += " · VAE %s" % rec["vae"]
+        return txt
+
+    def _img_recipe_show(self, rec):
+        iw = self._imgw
+        iw["recipe_lbl"].configure(
+            text=self._img_recipe_text(rec))
+        if not iw["recipe_row"].winfo_ismapped():
+            iw["recipe_row"].pack(fill="x", pady=(4, 0),
+                                  before=iw["status"])
+
+    def _img_recipe_hide(self):
+        iw = self._imgw
+        if iw["recipe_row"].winfo_ismapped():
+            iw["recipe_row"].pack_forget()
+
+    def _img_apply_recipe(self, rec):
+        """Load a saved image's settings into the studio
+        controls - prompt, negative, seed (the seed that
+        was actually used, random draws included), steps,
+        CFG, sampler, size, model and VAE."""
         iw = self._imgw
         iw["prompt"].delete("1.0", "end")
         iw["prompt"].insert("1.0", rec.get("prompt", ""))
@@ -4409,7 +4604,28 @@ class App:
             self._img_pick_vae(rec["vae_path"])
         elif not rec.get("vae_path"):
             self._img_pick_vae("")
+        self._img_save_ui()
+
+    def _img_use_current_settings(self):
+        rec = self._img_current
+        if not rec:
+            return
+        self._img_apply_recipe(rec)
+        self._imgw["status"].configure(
+            text="Settings loaded from that image - seed %s "
+                 "and all. Generate makes its twin."
+                 % rec.get("seed", ""))
+
+    def _img_sidebar_pick(self, _e=None):
+        sel = self.img_list.curselection()
+        if not sel:
+            return
+        rec = self._img_records[sel[0]]
+        self._img_current = rec
+        iw = self._imgw
+        self._img_apply_recipe(rec)
         self._img_show(os.path.join(IMG_DIR, rec["file"]))
+        self._img_recipe_show(rec)
         iw["status"].configure(
             text="%s - %s, %d steps, CFG %s, seed %s"
                  % (rec.get("model", ""), rec.get("size", ""),
@@ -4423,6 +4639,7 @@ class App:
         iw["status"].configure(text="")
         iw["log"].configure(text="")
         self._img_bar(0)
+        self._img_recipe_hide()
         self._img_current = None
         self._img_photo = None
         iw["view"].configure(

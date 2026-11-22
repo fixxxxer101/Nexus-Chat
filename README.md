@@ -23,6 +23,12 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   (search Hugging Face by kind, or link folders — a
   ComfyUI models folder classifies itself), a VAE picker
   in the studio, and one-click LoRA tags in the prompt.
+  Every generated PNG also carries its own recipe in its
+  metadata — prompt, model, settings, and the seed that
+  was actually used (blank seed means random, and the
+  drawn seed is recorded) — and a **Use settings** button
+  under any past image loads it all back for an exact
+  recreation.
 - **Thinking traces, when the model thinks.** Qwen3 replies carry
   a saved thinking trace, shown as a collapsible **▸ Thinking**
   block — click to read exactly how the model reasoned, click
