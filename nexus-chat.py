@@ -54,6 +54,7 @@ Backend URL override for testing: NEXUS_OLLAMA=http://host:port
 
 import hashlib
 import json
+import math
 import os
 import queue
 import shutil
@@ -75,7 +76,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.23.0"
+VERSION = "1.24.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -151,6 +152,10 @@ OPTIONAL_MODELS = [
      "The classic image-chat model."),
     ("moondream:1.8b", "Moondream 1.8B", "Vision", "1.7 GB",
      "A tiny vision model, very light on RAM."),
+    ("nomic-embed-text", "Nomic Embed Text", "Embedding",
+     "274 MB", "Turns text into vectors for Knowledge "
+     "Bases. Not a chat model - the app uses it behind "
+     "the scenes so chats can search your folders."),
 ]
 CAT_TAGS = {t for t, *_ in OPTIONAL_MODELS}
 
@@ -187,11 +192,29 @@ def hf_default_quant(quants):
             return i
     return len(quants) // 2
 NUM_CTX = 4096
-# context budget (rough tokens, chars/4): compress when the assembled
-# context passes COMPRESS_AT; always keep the last KEEP_RAW messages
-# (after the origin pair) word-for-word.
+# The context size in force. 4096 is the safe default (the
+# Pi); on a bigger machine the user can turn it up under
+# Menu > Settings > Context size, and the App keeps this
+# cell in step with the saved setting. Every chat call
+# reads it through ctx_now().
+_CTX = {"n": NUM_CTX}
+
+
+def ctx_now():
+    return _CTX["n"]
+
+
+# context budget (rough tokens, chars/4): compress when the
+# assembled context passes compress_at(); always keep the
+# last KEEP_RAW messages (after the origin pair)
+# word-for-word. At the 4096 default the budget is the
+# historical 2700.
 COMPRESS_AT = 2700
 KEEP_RAW = 6
+
+
+def compress_at():
+    return max(1200, ctx_now() - 1400)
 PROPOSE_EVERY = 8          # user turns between memory-proposal passes
 
 # ---- theme: black, green lettering, orange highlight -------------
@@ -486,7 +509,7 @@ def api_get(path, timeout=4):
 def api_chat_once(model, messages, think_off=True):
     """One non-streaming chat call; returns the reply text."""
     payload = {"model": model, "messages": messages, "stream": False,
-               "options": {"num_ctx": NUM_CTX}}
+               "options": {"num_ctx": ctx_now()}}
     if supports_thinking(model) and think_off:
         payload["think"] = False
     req = urllib.request.Request(
@@ -569,7 +592,7 @@ class Streamer:
 
     def run(self):
         payload = {"model": self.model, "messages": self.messages,
-                   "stream": True, "options": {"num_ctx": NUM_CTX}}
+                   "stream": True, "options": {"num_ctx": ctx_now()}}
         if self.think is not None:
             # The level the user picked for this model (Menu >
             # Thinking): False / True / "low"|"medium"|"high".
@@ -626,6 +649,160 @@ class Streamer:
             except Exception:
                 pass
             self._resp = None
+
+
+# ------------------------------------------------------- knowledge bases
+# A knowledge base is a label + a folder. Its text files are
+# chunked, embedded with a local embedding model (Ollama
+# /api/embed) and stored as a JSON index under DATA_DIR/kb/;
+# a chat that selects the base gets the best-matching chunks
+# attached to its questions (RAG). The registry lives in
+# kbases.json; removing a base deletes only its index,
+# never the user's files.
+KBASES_PATH = os.path.join(DATA_DIR, "kbases.json")
+KB_DIR = os.path.join(DATA_DIR, "kb")
+EMBED_MODEL = os.environ.get("NEXUS_EMBED_MODEL",
+                             "nomic-embed-text")
+KB_EXTS = {".txt", ".md", ".markdown", ".log", ".json",
+           ".csv", ".tsv", ".py", ".js", ".ts", ".html",
+           ".htm", ".xml", ".yaml", ".yml", ".ini", ".cfg",
+           ".sh", ".bat", ".lua", ".rb", ".c", ".h", ".cpp",
+           ".rs", ".go", ".java"}
+KB_TOPK = 4
+KB_CHUNK = 800
+KB_OVERLAP = 120
+
+
+def load_kbases():
+    data = _load_json(KBASES_PATH, [])
+    return data if isinstance(data, list) else []
+
+
+def save_kbases(kbases):
+    _save_json(KBASES_PATH, kbases)
+
+
+def kb_index_path(kid):
+    return os.path.join(KB_DIR, kid + ".json")
+
+
+def load_kb_index(kid):
+    data = _load_json(kb_index_path(kid), None)
+    return data if isinstance(data, dict) else None
+
+
+def chunk_text(text, size=KB_CHUNK, overlap=KB_OVERLAP):
+    """Split text into overlapping chunks, preferring
+    paragraph boundaries; a paragraph longer than the
+    chunk size is hard-split with overlap."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text)]
+    chunks = []
+    cur = ""
+    for p in paras:
+        if not p:
+            continue
+        if len(p) > size:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            step = max(1, size - overlap)
+            for i in range(0, len(p), step):
+                chunks.append(p[i:i + size])
+            continue
+        if cur and len(cur) + 1 + len(p) > size:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = cur + "\n" + p if cur else p
+    if cur:
+        chunks.append(cur)
+    return [c for c in chunks if c.strip()]
+
+
+def api_embed(texts):
+    """Embed a list of texts with EMBED_MODEL via Ollama;
+    returns a list of vectors (lists of floats)."""
+    out = []
+    for i in range(0, len(texts), 32):
+        batch = texts[i:i + 32]
+        payload = {"model": EMBED_MODEL, "input": batch}
+        req = urllib.request.Request(
+            OLLAMA + "/api/embed",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=900) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        out.extend(data.get("embeddings") or [])
+    return out
+
+
+def kb_build_index(kb, progress=None):
+    """(Re)build a knowledge base's index from its folder.
+    progress(done, total, name) is called per file when
+    given. Returns {"files": n, "chunks": m}."""
+    folder = kb["folder"]
+    files = []
+    for root, _dirs, names in os.walk(folder):
+        for name in sorted(names):
+            if os.path.splitext(name)[1].lower() in KB_EXTS:
+                files.append(os.path.join(root, name))
+    files.sort()
+    chunks = []
+    for done, path in enumerate(files):
+        if progress:
+            progress(done, len(files),
+                     os.path.basename(path))
+        try:
+            if os.path.getsize(path) > 4_000_000:
+                continue
+            with open(path, encoding="utf-8",
+                      errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        rel = os.path.relpath(path, folder)
+        for piece in chunk_text(text):
+            chunks.append({"src": rel, "text": piece})
+    if progress:
+        progress(len(files), len(files), "")
+    vecs = api_embed([c["text"] for c in chunks]) \
+        if chunks else []
+    for c, v in zip(chunks, vecs):
+        c["vec"] = v
+    chunks = [c for c in chunks if c.get("vec")]
+    os.makedirs(KB_DIR, exist_ok=True)
+    _save_json(kb_index_path(kb["id"]), {
+        "label": kb["label"], "folder": folder,
+        "built": time.time(), "model": EMBED_MODEL,
+        "files": len(files), "chunks": chunks})
+    return {"files": len(files), "chunks": len(chunks)}
+
+
+def _cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if not na or not nb:
+        return 0.0
+    return dot / (na * nb)
+
+
+def kb_search(kb, query, topk=KB_TOPK):
+    """The best-matching chunks of a knowledge base for a
+    query: [(score, source, text)], best first. Empty
+    when the base has no index."""
+    index = load_kb_index(kb["id"])
+    if not index or not index.get("chunks"):
+        return []
+    qvec = api_embed([query])
+    if not qvec:
+        return []
+    q = qvec[0]
+    scored = [(_cosine(q, c["vec"]), c["src"], c["text"])
+              for c in index["chunks"]]
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return scored[:topk]
 
 
 # ---------------------------------------------------------------- storage
@@ -751,7 +928,7 @@ def maybe_compress(store, chat, model):
     """Fold older turns into the key-topics note when the context is
     over budget. Returns True if a compression pass ran. The origin
     pair is never folded; the last KEEP_RAW turns stay raw."""
-    if context_tokens(store, chat) <= COMPRESS_AT:
+    if context_tokens(store, chat) <= compress_at():
         return False
     base = 2 if chat.get("origin") else 0
     tail = chat["messages"][base + chat.get("folded", 0):]
@@ -1875,6 +2052,12 @@ class App:
         self.tk = tk
         self.root = root
         self.store = Store()
+        try:
+            _CTX["n"] = int(self.store.settings.get("ctx")
+                            or NUM_CTX)
+        except Exception:
+            _CTX["n"] = NUM_CTX
+        self.kbases = load_kbases()
         self.events = queue.Queue()
         self.streamer = None
         self.busy = False
@@ -1894,6 +2077,8 @@ class App:
         self._mdl = None               # Model Manager window state
         self._opw = None               # Opacity window state
         self._pull = None              # in-flight model download
+        self._kbwin = None             # Knowledge Bases window
+        self._send_aborted = False     # Stop during a KB search
 
         root.title("%s v%s" % (APP_NAME, VERSION))
         root.geometry("1040x700")
@@ -1988,6 +2173,14 @@ class App:
         tk.Label(head, text="Prompt", bg=PANEL, fg=GREEN_DIM,
                  font=(FONT, 9)).pack(side="right", padx=(0, 6))
         self._refresh_prompt_btn()
+        self.kb_btn = RoundedButton(head, text="None",
+                                    kind="ghost", font=(FONT, 10),
+                                    bg=PANEL,
+                                    command=self._kb_popup)
+        self.kb_btn.pack(side="right", pady=11)
+        tk.Label(head, text="Knowledge", bg=PANEL, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(side="right", padx=(0, 6))
+        self._refresh_kb_btn()
 
         body = tk.Frame(self.root, bg=self._frame_bg())
         self._frame_widgets.append(body)
@@ -2345,6 +2538,14 @@ class App:
             label="Update checks: " + dict(iv_labels).get(
                 cur_iv, "%d min" % cur_iv),
             menu=umenu)
+        cmenu = tk.Menu(smenu, **style)
+        for n in (4096, 8192, 16384, 32768):
+            cmenu.add_command(
+                label=("✓ " if ctx_now() == n else "   ")
+                + "%d tokens" % n,
+                command=lambda n_=n: self._set_ctx(n_))
+        smenu.add_cascade(label="Context size: %d" % ctx_now(),
+                          menu=cmenu)
         menu.add_cascade(label="Settings", menu=smenu)
         menu.add_separator()
         menu.add_command(label="System prompt…",
@@ -2356,6 +2557,8 @@ class App:
                          command=self.open_controller)
         menu.add_command(label="Model Manager…",
                          command=self.open_models)
+        menu.add_command(label="Knowledge Bases…",
+                         command=self.open_kbases)
         menu.add_separator()
         menu.add_command(label="Update Nexus Chat…",
                          command=self.open_update)
@@ -2717,6 +2920,7 @@ class App:
 
     def open_chat(self, chat):
         self.current = chat
+        self._refresh_kb_btn()
         for b in self.blocks:
             b.destroy()
         self.blocks = []
@@ -2724,7 +2928,8 @@ class App:
         self._wrap_labels = []
         for m in chat["messages"]:
             self._render_message(m["role"], m.get("content", ""),
-                                 m.get("thinking", ""))
+                                 m.get("thinking", ""),
+                                 sources=m.get("sources"))
         self._at_bottom = True
         # Settle the geometry and the scroll region NOW: the
         # flow's Configure can be swallowed in the destroy /
@@ -2736,8 +2941,430 @@ class App:
         self.canvas.yview_moveto(1.0)
         self._settle_bubbles()
 
+    # ---- knowledge bases -------------------------------------------
+    def _kb_by_id(self, kid):
+        for kb in self.kbases:
+            if kb.get("id") == kid:
+                return kb
+        return None
+
+    def _kb_label(self):
+        kb = self._kb_by_id((self.current or {}).get("kb"))
+        return kb["label"] if kb else "None"
+
+    def _refresh_kb_btn(self):
+        try:
+            self.kb_btn.configure(text=self._kb_label()[:18])
+        except Exception:
+            pass
+
+    def _pick_kb(self, kid):
+        chat = self.current
+        if chat is None:
+            return
+        if kid:
+            chat["kb"] = kid
+        else:
+            chat.pop("kb", None)
+        self.store.save_chat(chat)
+        self._refresh_kb_btn()
+
+    def _kb_popup(self):
+        tk = self.tk
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=GREEN,
+                       activebackground=GREEN_FAINT,
+                       activeforeground=GREEN, bd=0,
+                       font=(FONT, 10))
+        cur = (self.current or {}).get("kb")
+        menu.add_command(
+            label=("✓ " if not cur else "   ") + "None",
+            command=lambda: self._pick_kb(None))
+        for kb in self.kbases:
+            menu.add_command(
+                label=("✓ " if cur == kb["id"] else "   ")
+                + kb["label"],
+                command=lambda k=kb["id"]: self._pick_kb(k))
+        menu.add_separator()
+        menu.add_command(label="Manage knowledge bases…",
+                         command=self.open_kbases)
+        x = self.kb_btn.winfo_rootx()
+        y = (self.kb_btn.winfo_rooty()
+             + self.kb_btn.winfo_height())
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+        return menu
+
+    def _add_sources(self, block, sources):
+        tk = self.tk
+        lbl = tk.Label(block["frame"],
+                       text="Sources: " + " · ".join(sources),
+                       bg=BUBBLE_BOT, fg=GREEN_DIM,
+                       font=(FONT, 8), justify="left", anchor="w",
+                       wraplength=self._wrap_now)
+        lbl.pack(fill="x", anchor="w", padx=12, pady=(0, 8))
+        block["sources_lbl"] = lbl
+        self._wrap_labels.append(lbl)
+
+    # ---- knowledge bases window --------------------------------------
+    def open_kbases(self):
+        tk = self.tk
+        if self._kbwin is not None:
+            try:
+                self._kbwin["win"].deiconify()
+                self._kbwin["win"].lift()
+                return
+            except Exception:
+                self._kbwin = None
+        win = tk.Toplevel(self.root)
+        style_window(win)
+        win.title("Knowledge Bases")
+        win.geometry("680x560")
+        win.configure(bg=BG)
+        kw = {"win": win, "queue": queue.Queue(), "rows": {},
+              "indexing": set(), "pulling": False}
+        self._kbwin = kw
+        tk.Label(win, text="KNOWLEDGE BASES", bg=BG, fg=GREEN,
+                 font=(FONT, 13, "bold")).pack(anchor="w",
+                                               padx=16,
+                                               pady=(14, 2))
+        tk.Label(win, text="A knowledge base is a label and a "
+                           "folder. Pick one in a chat (the "
+                           "Knowledge picker in the header) and "
+                           "the model answers with the base's "
+                           "contents in hand. Removing a base "
+                           "deletes only its index - your files "
+                           "are never touched.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                 justify="left", anchor="w",
+                 wraplength=640).pack(fill="x", padx=16,
+                                      pady=(0, 8))
+        erow = tk.Frame(win, bg=BG)
+        erow.pack(fill="x", padx=16, pady=(0, 4))
+        kw["embed_lbl"] = tk.Label(erow, text="", bg=BG,
+                                    fg=GREEN_DIM, font=(FONT, 9))
+        kw["embed_lbl"].pack(side="left")
+        kw["embed_btn"] = RoundedButton(
+            erow, text="Get embedding model", kind="ghost",
+            bg=BG, font=(FONT, 9),
+            command=lambda: self._kb_pull_embed(kw))
+        kw["embed_btn"].pack(side="right")
+        kw["list"] = tk.Frame(win, bg=BG)
+        kw["list"].pack(fill="both", expand=True, padx=12,
+                        pady=4)
+        add = RoundedButton(win, text="＋ Add knowledge base",
+                            kind="primary", bg=BG,
+                            font=(FONT, 10, "bold"),
+                            command=lambda:
+                                self._kb_add_dialog(kw))
+        add.pack(pady=(2, 12))
+
+        def close():
+            self._kbwin = None
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", close)
+        self._kb_render(kw)
+        self._kb_refresh_embed(kw)
+        self._kb_drain(kw)
+
+    def _kb_render(self, kw):
+        tk = self.tk
+        for child in kw["list"].winfo_children():
+            child.destroy()
+        kw["rows"] = {}
+        if not self.kbases:
+            tk.Label(kw["list"], text="No knowledge bases "
+                                      "yet. Add one below.",
+                     bg=BG, fg=GREEN_DIM,
+                     font=(FONT, 10)).pack(pady=16)
+            return
+        for kb in self.kbases:
+            row = BubbleFrame(kw["list"], fill=PANEL,
+                              outline=BORDER, bg=BG)
+            row.pack(fill="x", pady=4)
+            top = tk.Frame(row, bg=PANEL)
+            top.pack(fill="x", padx=12, pady=(8, 0))
+            tk.Label(top, text=kb["label"], bg=PANEL, fg=GREEN,
+                     font=(FONT, 11, "bold")).pack(side="left")
+            rm = RoundedButton(top, text="Remove", kind="quiet",
+                               bg=PANEL, font=(FONT, 9))
+            rm.pack(side="right")
+            ri = RoundedButton(top, text="Reindex", kind="ghost",
+                               bg=PANEL, font=(FONT, 9),
+                               command=lambda k=kb:
+                                   self._kb_index_start(kw, k))
+            ri.pack(side="right", padx=(0, 6))
+            folder = kb["folder"]
+            if len(folder) > 78:
+                folder = folder[:30] + "…" + folder[-45:]
+            tk.Label(row, text=folder, bg=PANEL, fg=GREEN_DIM,
+                     font=(FONT, 9)).pack(anchor="w", padx=12)
+            status = tk.Label(row, text="", bg=PANEL,
+                              fg=GREEN_DIM, font=(FONT, 9))
+            status.pack(anchor="w", padx=12, pady=(0, 8))
+            state = {"status": status, "confirm": False}
+            kw["rows"][kb["id"]] = state
+
+            def on_remove(k=kb, r=state, b=rm):
+                if not r["confirm"]:
+                    r["confirm"] = True
+                    b.configure(text="Sure?")
+                    return
+                self.kbases = [x for x in self.kbases
+                               if x["id"] != k["id"]]
+                save_kbases(self.kbases)
+                try:
+                    os.remove(kb_index_path(k["id"]))
+                except OSError:
+                    pass
+                self._refresh_kb_btn()
+                self._kb_render(kw)
+            rm._command = on_remove
+            self._kb_row_status(kw, kb)
+
+    def _kb_row_status(self, kw, kb):
+        row = kw["rows"].get(kb["id"])
+        if row is None:
+            return
+        if kb["id"] in kw["indexing"]:
+            text = "Indexing…"
+        else:
+            index = load_kb_index(kb["id"])
+            if index:
+                when = time.strftime(
+                    "%b %d %H:%M",
+                    time.localtime(index.get("built", 0)))
+                text = ("%d files · %d chunks · built %s"
+                        % (index.get("files", 0),
+                           len(index.get("chunks", [])), when))
+            else:
+                text = "Not indexed yet - press Reindex."
+        try:
+            row["status"].configure(text=text)
+        except Exception:
+            pass
+
+    def _kb_index_start(self, kw, kb):
+        if kb["id"] in kw["indexing"]:
+            return
+        kw["indexing"].add(kb["id"])
+        self._kb_row_status(kw, kb)
+
+        def work():
+            try:
+                stats = kb_build_index(
+                    kb, progress=lambda d, t, name:
+                        kw["queue"].put(
+                            ("progress", (kb["id"], d, t, name))))
+                kw["queue"].put(("indexed", (kb["id"], stats)))
+            except Exception as e:
+                kw["queue"].put(
+                    ("index_error", (kb["id"], str(e))))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _kb_refresh_embed(self, kw):
+        def work():
+            try:
+                names = [mm["name"] for mm in
+                         api_get("/api/tags", timeout=3)
+                         .get("models", [])]
+            except Exception:
+                names = None
+            kw["queue"].put(("embed_status", names))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _kb_pull_embed(self, kw):
+        if kw["pulling"]:
+            return
+        kw["pulling"] = True
+
+        def work():
+            try:
+                req = urllib.request.Request(
+                    OLLAMA + "/api/pull",
+                    data=json.dumps({"name": EMBED_MODEL,
+                                     "stream": True})
+                    .encode("utf-8"),
+                    headers={"Content-Type":
+                             "application/json"})
+                resp = urllib.request.urlopen(req, timeout=1800)
+                layers = {}
+                try:
+                    for raw in resp:
+                        line = raw.strip()
+                        if not line:
+                            continue
+                        ev = json.loads(line.decode("utf-8"))
+                        if ev.get("error"):
+                            kw["queue"].put(
+                                ("embed_pull_error",
+                                 str(ev["error"])))
+                            return
+                        d = ev.get("digest")
+                        if d and ev.get("total"):
+                            layers[d] = (ev.get("completed", 0),
+                                         ev["total"])
+                        done = sum(c for c, _ in layers.values())
+                        total = sum(t for _, t in layers.values())
+                        kw["queue"].put(
+                            ("embed_pull",
+                             (done, total,
+                              ev.get("status", ""))))
+                finally:
+                    resp.close()
+                kw["queue"].put(("embed_pull_done", None))
+            except Exception as e:
+                kw["queue"].put(("embed_pull_error", str(e)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _kb_drain(self, kw):
+        if self._kbwin is not kw:
+            return
+        try:
+            while True:
+                kind, payload = kw["queue"].get_nowait()
+                if kind == "progress":
+                    kid, d, t, name = payload
+                    row = kw["rows"].get(kid)
+                    if row is not None:
+                        row["status"].configure(
+                            text="Indexing… %d/%d files (%s)"
+                                 % (d, t, name))
+                elif kind == "indexed":
+                    kid, _stats = payload
+                    kw["indexing"].discard(kid)
+                    kb = self._kb_by_id(kid)
+                    if kb:
+                        self._kb_row_status(kw, kb)
+                elif kind == "index_error":
+                    kid, err = payload
+                    kw["indexing"].discard(kid)
+                    row = kw["rows"].get(kid)
+                    if row is not None:
+                        hint = (" - is the embedding model "
+                                "installed?" if "not found"
+                                in err else "")
+                        row["status"].configure(
+                            text="Index failed: %s%s"
+                                 % (err, hint))
+                elif kind == "embed_status":
+                    names = payload
+                    if names is None:
+                        kw["embed_lbl"].configure(
+                            text="Embedding model: Ollama not "
+                                 "reachable.")
+                        kw["embed_btn"].set_enabled(False)
+                    elif any(n == EMBED_MODEL or
+                             n.startswith(EMBED_MODEL + ":")
+                             for n in names):
+                        kw["embed_lbl"].configure(
+                            text="Embedding model: %s - "
+                                 "installed ✓" % EMBED_MODEL)
+                        kw["embed_btn"].set_enabled(False)
+                    else:
+                        kw["embed_lbl"].configure(
+                            text="Embedding model: %s - not "
+                                 "installed." % EMBED_MODEL)
+                        kw["embed_btn"].set_enabled(True)
+                elif kind == "embed_pull":
+                    done, total, status = payload
+                    pct = ("%.0f%%" % (100.0 * done / total)
+                           if total else "")
+                    kw["embed_lbl"].configure(
+                        text="Downloading %s… %s %s"
+                             % (EMBED_MODEL, pct, status))
+                elif kind == "embed_pull_done":
+                    kw["pulling"] = False
+                    self._kb_refresh_embed(kw)
+                elif kind == "embed_pull_error":
+                    kw["pulling"] = False
+                    kw["embed_lbl"].configure(
+                        text="Download failed: %s" % payload)
+                    kw["embed_btn"].set_enabled(True)
+        except queue.Empty:
+            pass
+        try:
+            kw["win"].after(150, lambda: self._kb_drain(kw))
+        except Exception:
+            pass
+
+    def _kb_add_dialog(self, kw):
+        tk = self.tk
+        from tkinter import filedialog
+        dlg = tk.Toplevel(kw["win"])
+        style_window(dlg)
+        dlg.title("Add Knowledge Base")
+        dlg.geometry("540x250")
+        dlg.configure(bg=BG)
+        dlg.transient(kw["win"])
+        tk.Label(dlg, text="Label", bg=BG, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(anchor="w", padx=16,
+                                      pady=(14, 2))
+        label_ent = tk.Entry(dlg, bg=PANEL2, fg=GREEN,
+                             insertbackground=GREEN, relief="flat",
+                             font=(FONT, 11))
+        label_ent.pack(fill="x", padx=16, ipady=4)
+        tk.Label(dlg, text="Folder", bg=BG, fg=GREEN_DIM,
+                 font=(FONT, 9)).pack(anchor="w", padx=16,
+                                      pady=(10, 2))
+        frow = tk.Frame(dlg, bg=BG)
+        frow.pack(fill="x", padx=16)
+        folder_ent = tk.Entry(frow, bg=PANEL2, fg=GREEN,
+                              insertbackground=GREEN,
+                              relief="flat", font=(FONT, 11))
+        folder_ent.pack(side="left", fill="x", expand=True,
+                        ipady=4)
+        browse = RoundedButton(
+            frow, text="Browse…", kind="ghost", bg=BG,
+            font=(FONT, 9),
+            command=lambda: self._kb_browse(folder_ent, dlg))
+        browse.pack(side="right", padx=(8, 0))
+        err = tk.Label(dlg, text="", bg=BG, fg=ERROR,
+                       font=(FONT, 9))
+        err.pack(anchor="w", padx=16, pady=(8, 0))
+        brow = tk.Frame(dlg, bg=BG)
+        brow.pack(pady=(6, 0))
+        RoundedButton(brow, text="Add + Index", kind="primary",
+                      bg=BG, font=(FONT, 10, "bold"),
+                      command=lambda: add()).pack(side="left")
+        RoundedButton(brow, text="Cancel", kind="ghost", bg=BG,
+                      font=(FONT, 10),
+                      command=dlg.destroy).pack(side="left",
+                                                padx=8)
+
+        def add():
+            label = label_ent.get().strip()
+            folder = folder_ent.get().strip()
+            if not label:
+                err.configure(text="Give the base a label.")
+                return
+            if not os.path.isdir(folder):
+                err.configure(text="That folder does not "
+                                   "exist.")
+                return
+            kb = {"id": "kb" + time.strftime("%Y%m%d%H%M%S")
+                  + "-%d" % (time.time() % 1000),
+                  "label": label, "folder": folder}
+            self.kbases.append(kb)
+            save_kbases(self.kbases)
+            dlg.destroy()
+            self._kb_render(kw)
+            self._kb_index_start(kw, kb)
+        label_ent.focus_set()
+
+    def _kb_browse(self, entry, dlg):
+        from tkinter import filedialog
+        path = filedialog.askdirectory(parent=dlg,
+                                       title="Knowledge base "
+                                             "folder")
+        if path:
+            entry.delete(0, "end")
+            entry.insert(0, path)
+
     # ---- rendering ---------------------------------------------------
-    def _render_message(self, role, content, thinking=""):
+    def _render_message(self, role, content, thinking="",
+                        sources=None):
         tk = self.tk
         user = role == "user"
         fill = BUBBLE_USER if user else BUBBLE_BOT
@@ -2755,7 +3382,8 @@ class App:
         block = {"frame": frame, "bubble": bubble,
                  "thinking_lbl": None,
                  "thinking_head": None, "open": False,
-                 "code_boxes": [], "tables": []}
+                 "code_boxes": [], "tables": [],
+                 "sources_lbl": None}
         self.block_objs.append(block)
         box = tk.Frame(frame, bg=fill)
         box.pack(fill="x", anchor="w")
@@ -2776,6 +3404,8 @@ class App:
         else:
             block["content_lbl"] = None
             self._render_rich(block, content)
+        if sources and not user:
+            self._add_sources(block, sources)
         bubble._sync_soon()
         return block
 
@@ -2916,6 +3546,10 @@ class App:
         if self.busy:
             if self.streamer:
                 self.streamer.stop()
+            else:
+                # still preparing (a knowledge search): the
+                # send_ready handler will stand down
+                self._send_aborted = True
             return
         text = self.input.get("1.0", "end").strip()
         if not text or not self.current:
@@ -2936,15 +3570,80 @@ class App:
         self.store.settings["model"] = model
         self.store.save_settings()
         block = self._render_message("assistant", "", "")
-        self._cur = {"block": block, "content": "", "thinking": ""}
-        ctx = build_context(self.store, chat, model)
-        self.streamer = Streamer(
-            model, ctx, self.events,
-            think=think_wire(model, self._think_level(model)))
+        self._cur = {"block": block, "content": "", "thinking": "",
+                     "sources": None}
+        self._send_aborted = False
         self.busy = True
         self.send_btn.configure(text="Stop")
+        kb = self._kb_by_id(chat.get("kb"))
+        if kb is not None and load_kb_index(kb["id"]):
+            self.status.configure(
+                text="Searching %s…" % kb["label"], fg=ORANGE)
+            threading.Thread(target=self._prepare_send,
+                             args=(chat, model, text, kb),
+                             daemon=True).start()
+        else:
+            self._begin_stream(
+                model, build_context(self.store, chat, model))
+
+    def _begin_stream(self, model, messages):
+        self.streamer = Streamer(
+            model, messages, self.events,
+            think=think_wire(model, self._think_level(model)))
         self.status.configure(text="Generating…", fg=ORANGE)
-        threading.Thread(target=self.streamer.run, daemon=True).start()
+        threading.Thread(target=self.streamer.run,
+                         daemon=True).start()
+
+    def _prepare_send(self, chat, model, text, kb):
+        # On a thread: embed the question, pull the base's
+        # best-matching chunks, and attach them to the
+        # question the model sees. The saved chat keeps the
+        # clean question; the sources ride on the reply.
+        try:
+            hits = kb_search(kb, text)
+        except Exception as e:
+            log("kb search failed: %s" % e)
+            hits = []
+        ctx = build_context(self.store, chat, model)
+        sources = None
+        if hits:
+            block_text = ("Knowledge from the '%s' knowledge "
+                          "base:\n\n" % kb["label"]) + \
+                "\n\n".join("[%d] (%s)\n%s"
+                            % (i + 1, src, txt)
+                            for i, (_s, src, txt)
+                            in enumerate(hits))
+            for m in reversed(ctx):
+                if m["role"] == "user":
+                    m["content"] = (block_text
+                                    + "\n\n---\n\nMy question: "
+                                    + m["content"])
+                    break
+            seen = []
+            for _s, src, _t in hits:
+                name = "%s — %s" % (kb["label"], src)
+                if name not in seen:
+                    seen.append(name)
+            sources = seen
+        self.events.put(("send_ready", (model, ctx, sources)))
+
+    def _cancel_prepared(self):
+        cur, self._cur = self._cur, None
+        self.busy = False
+        self._send_aborted = False
+        self.send_btn.configure(text="Send")
+        self.status.configure(text="", fg=GREEN_DIM)
+        if cur is not None:
+            block = cur["block"]
+            if block in self.block_objs:
+                self.block_objs.remove(block)
+            bub = block["bubble"]
+            if bub in self.blocks:
+                self.blocks.remove(bub)
+            try:
+                bub.destroy()
+            except Exception:
+                pass
 
     def _drain(self):
         try:
@@ -2977,6 +3676,13 @@ class App:
                     self.status.configure(text=text, fg=GREEN_DIM)
                 elif kind == "models":
                     self._on_models(text)
+                elif kind == "send_ready":
+                    model, messages, sources = text
+                    if self._send_aborted:
+                        self._cancel_prepared()
+                    elif self._cur is not None:
+                        self._cur["sources"] = sources
+                        self._begin_stream(model, messages)
                 elif kind == "version":
                     self._on_version(text)
                 elif kind == "pull_done":
@@ -3023,6 +3729,8 @@ class App:
             # markdown properly - code boxes with Copy buttons,
             # aligned tables, headings.
             self._render_rich(cur["block"], content)
+            if cur.get("sources"):
+                self._add_sources(cur["block"], cur["sources"])
             if self._view_at_bottom():
                 self.root.update_idletasks()
                 self.canvas.yview_moveto(1.0)
@@ -3045,6 +3753,8 @@ class App:
             pass
         msg = {"role": "assistant", "content": content,
                "thinking": cur["thinking"]}
+        if cur.get("sources"):
+            msg["sources"] = cur["sources"]
         chat["messages"].append(msg)
         if chat.get("origin") is None and len(chat["messages"]) >= 2:
             chat["origin"] = {"user": chat["messages"][0]["content"],
@@ -3088,6 +3798,12 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     # ---- ollama status -------------------------------------------------
+    # ---- context size ---------------------------------------------
+    def _set_ctx(self, n):
+        _CTX["n"] = n
+        self.store.settings["ctx"] = n
+        self.store.save_settings()
+
     # ---- version update checks -----------------------------------
     def _update_interval(self):
         try:

@@ -5,6 +5,27 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.24.0 — 2026-11-21
+Knowledge Bases (RAG) and an adjustable context size.
+
+Knowledge Bases: a base is a label and a folder
+(Menu > Knowledge Bases...). Its text files are
+chunked and embedded locally with nomic-embed-text
+(new in the model catalog, and offered for download
+in the Knowledge Bases window when missing), and the
+index lives in the app's data folder. Each chat picks
+its base in the header's Knowledge picker; when you
+send a message, the best-matching chunks ride along
+with your question, and the reply shows a Sources
+line naming the files they came from. Removing a
+base deletes only its index, never your files.
+
+Context size: Menu > Settings > Context size -
+4096 (the Pi-safe default), 8192, 16384 or 32768
+tokens. Every chat call and the compression budget
+follow the setting, so bigger machines can use the
+room they have.
+
 ## 1.23.0 — 2026-11-21
 The app checks for its own updates. A few seconds
 after starting, and then on an interval (every
