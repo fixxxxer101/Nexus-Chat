@@ -5,6 +5,18 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.25.0 — 2026-11-21
+nomic-embed-text is a required model now, not an
+optional extra: Knowledge Bases need it at all times,
+so setup force-downloads it alongside qwen2.5:3b on
+every install and update (both setup.sh and the
+Windows setup, which reads the required list from
+the app). In the Model Manager it carries the
+REQUIRED badge and cannot be deleted, same as
+qwen2.5:3b, and it no longer appears in the header's
+chat-model picker - it is infrastructure, not a chat
+model.
+
 ## 1.24.0 — 2026-11-21
 Knowledge Bases (RAG) and an adjustable context size.
 

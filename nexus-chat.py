@@ -76,7 +76,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.24.0"
+VERSION = "1.25.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -108,14 +108,16 @@ else:
 CHATS_DIR = os.path.join(DATA_DIR, "chats")
 MEMORY_PATH = os.path.join(DATA_DIR, "memory.json")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
-DEFAULT_MODELS = ["qwen2.5:3b"]
+DEFAULT_MODELS = ["qwen2.5:3b", "nomic-embed-text"]
 # Optional models, offered in the Download Models window (the
 # Ollama controller's "Download more models" button). Only
-# qwen2.5:3b above is required - setup installs just that one
-# - and everything here is an extra a person can pull onto
-# their own machine, the two Qwen3s included. Sizes are the
-# real download sizes, verified against Ollama's registry; a
-# model also needs roughly its size again in free RAM to run.
+# the DEFAULT_MODELS above are required - setup installs
+# those (qwen2.5:3b to chat, nomic-embed-text for Knowledge
+# Bases) - and everything here is an extra a person can
+# pull onto their own machine, the two Qwen3s included.
+# Sizes are the real download sizes, verified against
+# Ollama's registry; a model also needs roughly its size
+# again in free RAM to run.
 # (tag, display name, category, download size, blurb)
 OPTIONAL_MODELS = [
     ("qwen3:4b", "Qwen3 4B", "Chat", "2.5 GB",
@@ -152,10 +154,6 @@ OPTIONAL_MODELS = [
      "The classic image-chat model."),
     ("moondream:1.8b", "Moondream 1.8B", "Vision", "1.7 GB",
      "A tiny vision model, very light on RAM."),
-    ("nomic-embed-text", "Nomic Embed Text", "Embedding",
-     "274 MB", "Turns text into vectors for Knowledge "
-     "Bases. Not a chat model - the app uses it behind "
-     "the scenes so chats can search your folders."),
 ]
 CAT_TAGS = {t for t, *_ in OPTIONAL_MODELS}
 
@@ -663,6 +661,13 @@ KBASES_PATH = os.path.join(DATA_DIR, "kbases.json")
 KB_DIR = os.path.join(DATA_DIR, "kb")
 EMBED_MODEL = os.environ.get("NEXUS_EMBED_MODEL",
                              "nomic-embed-text")
+
+
+def is_embed_model(name):
+    """The embedding model is infrastructure, not a chat
+    model: it stays out of the header's model picker."""
+    return bool(name) and (name == EMBED_MODEL
+                           or name.startswith(EMBED_MODEL + ":"))
 KB_EXTS = {".txt", ".md", ".markdown", ".log", ".json",
            ".csv", ".tsv", ".py", ".js", ".ts", ".html",
            ".htm", ".xml", ".yaml", ".yml", ".ini", ".cfg",
@@ -3875,9 +3880,11 @@ class App:
             return
         if not self.busy:
             self.status.configure(text="Ollama ready", fg=GREEN_DIM)
-        self._model_names = names or DEFAULT_MODELS
-        if names and self.model.get() not in names:
-            self.model.set(names[0])
+        chat_names = [n for n in (names or [])
+                      if not is_embed_model(n)]
+        self._model_names = chat_names or [DEFAULT_MODELS[0]]
+        if chat_names and self.model.get() not in chat_names:
+            self.model.set(chat_names[0])
         self.model_btn.configure(text=self.model.get())
 
     def _on_close(self):
@@ -3927,9 +3934,10 @@ class App:
         mdl["count"].pack(side="right", padx=14)
         tk.Label(win, text="Download optional models, or delete "
                            "the ones you no longer want. Only "
-                           "qwen2.5:3b is required - setup "
-                           "installs just that one, and it "
-                           "cannot be deleted. Every model below "
+                           "qwen2.5:3b and nomic-embed-text are "
+                           "required - setup installs those, "
+                           "and they cannot be deleted. Every "
+                           "model below "
                            "shows where it lives, so a duplicate "
                            "can be removed from the right place. "
                            "Model locations (further down) run "
@@ -4163,7 +4171,7 @@ class App:
                                radius=RADIUS_PANEL, bg=BG)
             rowf.pack(fill="x", padx=4, pady=3)
             row = {}
-            if tag == DEFAULT_MODELS[0]:
+            if tag in DEFAULT_MODELS:
                 tk.Label(rowf, text="REQUIRED", bg=PANEL,
                          fg=ORANGE_DIM,
                          font=(FONT, 8, "bold")).pack(
@@ -4207,7 +4215,7 @@ class App:
             mdl["bind_wheel"](rowf)
 
     def _mdl_delete_click(self, mdl, tag, row):
-        if tag == DEFAULT_MODELS[0]:
+        if tag in DEFAULT_MODELS:
             return          # the required model is never deleted
         if row.get("armed_until", 0) > time.time():
             row["btn"].set_enabled(False)

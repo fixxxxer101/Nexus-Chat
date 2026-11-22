@@ -53,8 +53,10 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   sees; the saved log always keeps every word. The Memory window
   shows exactly what the model currently carries for the open chat.
 - **Streaming replies**, model picker, Stop button
-  mid-generation. Only **qwen2.5:3b** is required — setup
-  installs just that one; everything else is optional.
+  mid-generation. Only **qwen2.5:3b** (chat) and
+  **nomic-embed-text** (Knowledge Base embeddings) are
+  required — setup installs those two; everything else
+  is optional.
 - **Model Manager.** The controller's **Manage models** button
   lists what's on the machine (with sizes) and a catalog of
   optional downloads — Qwen3, GPT-OSS, Mistral, Gemma, the
