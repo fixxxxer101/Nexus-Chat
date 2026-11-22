@@ -5,6 +5,16 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.25.1 — 2026-11-21
+The Knowledge Bases window no longer has a "Get
+embedding model" button. Since the model is a
+required download, the window simply verifies it
+instead: on open (and after any indexing error) it
+checks the model is installed and runs a live embed
+probe, and the status line reports the result -
+"installed and ready", "not installed" (run setup
+again), or "not responding".
+
 ## 1.25.0 — 2026-11-21
 nomic-embed-text is a required model now, not an
 optional extra: Knowledge Bases need it at all times,

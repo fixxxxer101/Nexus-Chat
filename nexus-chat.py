@@ -76,7 +76,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.25.0"
+VERSION = "1.25.1"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -3028,7 +3028,7 @@ class App:
         win.geometry("680x560")
         win.configure(bg=BG)
         kw = {"win": win, "queue": queue.Queue(), "rows": {},
-              "indexing": set(), "pulling": False}
+              "indexing": set()}
         self._kbwin = kw
         tk.Label(win, text="KNOWLEDGE BASES", bg=BG, fg=GREEN,
                  font=(FONT, 13, "bold")).pack(anchor="w",
@@ -3047,14 +3047,10 @@ class App:
                                       pady=(0, 8))
         erow = tk.Frame(win, bg=BG)
         erow.pack(fill="x", padx=16, pady=(0, 4))
-        kw["embed_lbl"] = tk.Label(erow, text="", bg=BG,
-                                    fg=GREEN_DIM, font=(FONT, 9))
+        kw["embed_lbl"] = tk.Label(
+            erow, text="Embedding model: checking…", bg=BG,
+            fg=GREEN_DIM, font=(FONT, 9))
         kw["embed_lbl"].pack(side="left")
-        kw["embed_btn"] = RoundedButton(
-            erow, text="Get embedding model", kind="ghost",
-            bg=BG, font=(FONT, 9),
-            command=lambda: self._kb_pull_embed(kw))
-        kw["embed_btn"].pack(side="right")
         kw["list"] = tk.Frame(win, bg=BG)
         kw["list"].pack(fill="both", expand=True, padx=12,
                         pady=4)
@@ -3169,58 +3165,41 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _kb_refresh_embed(self, kw):
+        """Verify the embedding model: it must be installed
+        AND answer a live embed probe. The result is a
+        status line, nothing to click - the model is a
+        required download, so a missing one means setup
+        needs another run."""
         def work():
             try:
                 names = [mm["name"] for mm in
                          api_get("/api/tags", timeout=3)
                          .get("models", [])]
             except Exception:
-                names = None
-            kw["queue"].put(("embed_status", names))
-        threading.Thread(target=work, daemon=True).start()
-
-    def _kb_pull_embed(self, kw):
-        if kw["pulling"]:
-            return
-        kw["pulling"] = True
-
-        def work():
+                kw["queue"].put(
+                    ("embed_status",
+                     "Embedding model: Ollama not reachable "
+                     "- cannot verify."))
+                return
+            if not any(is_embed_model(n) for n in names):
+                kw["queue"].put(
+                    ("embed_status",
+                     "Embedding model: %s - NOT installed. "
+                     "It is a required model: run setup "
+                     "again and it will be downloaded."
+                     % EMBED_MODEL))
+                return
             try:
-                req = urllib.request.Request(
-                    OLLAMA + "/api/pull",
-                    data=json.dumps({"name": EMBED_MODEL,
-                                     "stream": True})
-                    .encode("utf-8"),
-                    headers={"Content-Type":
-                             "application/json"})
-                resp = urllib.request.urlopen(req, timeout=1800)
-                layers = {}
-                try:
-                    for raw in resp:
-                        line = raw.strip()
-                        if not line:
-                            continue
-                        ev = json.loads(line.decode("utf-8"))
-                        if ev.get("error"):
-                            kw["queue"].put(
-                                ("embed_pull_error",
-                                 str(ev["error"])))
-                            return
-                        d = ev.get("digest")
-                        if d and ev.get("total"):
-                            layers[d] = (ev.get("completed", 0),
-                                         ev["total"])
-                        done = sum(c for c, _ in layers.values())
-                        total = sum(t for _, t in layers.values())
-                        kw["queue"].put(
-                            ("embed_pull",
-                             (done, total,
-                              ev.get("status", ""))))
-                finally:
-                    resp.close()
-                kw["queue"].put(("embed_pull_done", None))
+                vecs = api_embed(["ready check"])
+                if not vecs or not vecs[0]:
+                    raise ValueError("empty embedding")
+                text = ("Embedding model: %s - installed "
+                        "and ready ✓" % EMBED_MODEL)
             except Exception as e:
-                kw["queue"].put(("embed_pull_error", str(e)))
+                text = ("Embedding model: %s - installed, "
+                        "but not responding (%s)"
+                        % (EMBED_MODEL, e))
+            kw["queue"].put(("embed_status", text))
         threading.Thread(target=work, daemon=True).start()
 
     def _kb_drain(self, kw):
@@ -3253,40 +3232,9 @@ class App:
                         row["status"].configure(
                             text="Index failed: %s%s"
                                  % (err, hint))
-                elif kind == "embed_status":
-                    names = payload
-                    if names is None:
-                        kw["embed_lbl"].configure(
-                            text="Embedding model: Ollama not "
-                                 "reachable.")
-                        kw["embed_btn"].set_enabled(False)
-                    elif any(n == EMBED_MODEL or
-                             n.startswith(EMBED_MODEL + ":")
-                             for n in names):
-                        kw["embed_lbl"].configure(
-                            text="Embedding model: %s - "
-                                 "installed ✓" % EMBED_MODEL)
-                        kw["embed_btn"].set_enabled(False)
-                    else:
-                        kw["embed_lbl"].configure(
-                            text="Embedding model: %s - not "
-                                 "installed." % EMBED_MODEL)
-                        kw["embed_btn"].set_enabled(True)
-                elif kind == "embed_pull":
-                    done, total, status = payload
-                    pct = ("%.0f%%" % (100.0 * done / total)
-                           if total else "")
-                    kw["embed_lbl"].configure(
-                        text="Downloading %s… %s %s"
-                             % (EMBED_MODEL, pct, status))
-                elif kind == "embed_pull_done":
-                    kw["pulling"] = False
                     self._kb_refresh_embed(kw)
-                elif kind == "embed_pull_error":
-                    kw["pulling"] = False
-                    kw["embed_lbl"].configure(
-                        text="Download failed: %s" % payload)
-                    kw["embed_btn"].set_enabled(True)
+                elif kind == "embed_status":
+                    kw["embed_lbl"].configure(text=payload)
         except queue.Empty:
             pass
         try:
