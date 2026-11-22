@@ -34,7 +34,9 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   the window frame - the background around the header,
   sidebar, chat and input cards - between Black and
   Transparent. On Windows, Transparent makes the cards float
-  on the desktop; the cards themselves stay solid.
+  on the desktop, each keeping a bright green edge. A
+  **Content opacity** slider in the same submenu sets how
+  solid everything else is, from 30% to 100%.
 - **Chat logs.** Every conversation auto-saves and lists in the
   sidebar. Reopen any of them any time.
 - **Long-term memory, both modes.**

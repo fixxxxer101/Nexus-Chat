@@ -73,7 +73,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.17.0"
+VERSION = "1.18.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -1081,23 +1081,36 @@ class BubbleFrame(tk.Frame):
     and redraws itself whenever the frame changes size."""
 
     def __init__(self, master, fill, outline, radius=RADIUS_BUBBLE,
-                 bg=None, **kw):
+                 bg=None, edge=None, **kw):
         super().__init__(master,
                          bg=bg if bg is not None else BG, **kw)
         self._fill = fill
         self._outline = outline
         self._radius = radius
+        self._edge = edge
         self._cv = tk.Canvas(self, bg=self.cget("bg"), bd=0,
                              highlightthickness=0)
         self._cv.place(x=0, y=0, relwidth=1, relheight=1)
         self.bind("<Configure>", self._redraw)
+
+    def set_backing(self, colour):
+        """Change the colour behind the rounded shape - the
+        frame's own bg AND the underlay canvas's, which is the
+        one that actually shows at the corners. (Setting only
+        the frame left the canvas holding the old colour: a
+        magenta outline around every card after a toggle.)"""
+        self.configure(bg=colour)
+        self._cv.configure(bg=colour)
+        self._redraw()
 
     def _redraw(self, _e=None):
         w, h = self.winfo_width(), self.winfo_height()
         if w <= 1 or h <= 1:
             return
         self._cv.delete("all")
-        if self._outline == BUBBLE_USER_EDGE:
+        if self._edge is not None:
+            edge = self._edge
+        elif self._outline == BUBBLE_USER_EDGE:
             edge = BEVEL_AMBER_LIGHT
         else:
             edge = BEVEL_LIGHT
@@ -1207,6 +1220,7 @@ class App:
         self._ctl = None               # Ollama controller panel state
         self._upd = None               # Update window state
         self._mdl = None               # Model Manager window state
+        self._opw = None               # Opacity window state
         self._pull = None              # in-flight model download
 
         root.title("%s v%s" % (APP_NAME, VERSION))
@@ -1225,6 +1239,7 @@ class App:
         chats = self.store.sorted_chats()
         self.open_chat(chats[0] if chats else self.store.new_chat())
         self._apply_frame_bg()
+        self._apply_alpha()
         self.refresh_sidebar()
         self.root.after(60, self._drain)
         self.root.after(300, self._check_ollama)
@@ -1236,7 +1251,7 @@ class App:
         self._frame_widgets = []
         head = BubbleFrame(self.root, fill=PANEL, outline=BORDER,
                            radius=RADIUS_CARD, bg=self._frame_bg(),
-                           height=56)
+                           edge=GREEN, height=56)
         self._frame_widgets.append(head)
         head.pack(side="top", fill="x", padx=10, pady=(10, 2))
         head.pack_propagate(False)
@@ -1275,7 +1290,7 @@ class App:
 
         side = BubbleFrame(body, fill=PANEL, outline=BORDER,
                            radius=RADIUS_CARD, bg=self._frame_bg(),
-                           width=224)
+                           edge=GREEN, width=224)
         self._frame_widgets.append(side)
         side.pack(side="left", fill="y", padx=(10, 0), pady=10)
         side.pack_propagate(False)
@@ -1299,7 +1314,7 @@ class App:
         # instead of floating loose on the window background.
         main_card = BubbleFrame(body, fill=PANEL, outline=BORDER,
                                 radius=RADIUS_CARD,
-                                bg=self._frame_bg())
+                                bg=self._frame_bg(), edge=GREEN)
         self._frame_widgets.append(main_card)
         main_card.pack(side="left", fill="both", expand=True,
                        padx=(10, 10), pady=10)
@@ -1323,7 +1338,8 @@ class App:
         self.canvas.bind_all("<Button-5>", self._on_wheel)
 
         bar = BubbleFrame(self.root, fill=PANEL, outline=BORDER,
-                          radius=RADIUS_CARD, bg=self._frame_bg())
+                          radius=RADIUS_CARD, bg=self._frame_bg(),
+                          edge=GREEN)
         self._frame_widgets.append(bar)
         bar.pack(side="bottom", fill="x", padx=10, pady=(2, 10))
         field = BubbleFrame(bar, fill=PANEL2, outline=BORDER,
@@ -1471,7 +1487,10 @@ class App:
         self.root.configure(bg=colour)
         for w in self._frame_widgets:
             try:
-                w.configure(bg=colour)
+                if isinstance(w, BubbleFrame):
+                    w.set_backing(colour)
+                else:
+                    w.configure(bg=colour)
             except Exception:
                 pass
         if IS_WINDOWS:
@@ -1487,6 +1506,81 @@ class App:
         self.store.settings["chat_background"] = mode
         self.store.save_settings()
         self._apply_frame_bg()
+
+    # ---- content opacity ------------------------------------------
+    # A slider for everything that is NOT the frame: how solid
+    # the cards and their contents are, via the window's alpha.
+    # It composes with the frame setting - with Frame:
+    # Transparent the frame stays fully gone at any slider
+    # value; with Frame: Black the whole window fades together
+    # (Tk alpha is per-window, not per-widget).
+
+    def _ui_alpha(self):
+        try:
+            pct = int(self.store.settings.get("ui_alpha", 100))
+        except (TypeError, ValueError):
+            pct = 100
+        return max(30, min(100, pct))
+
+    def _apply_alpha(self):
+        try:
+            self.root.attributes("-alpha",
+                                 self._ui_alpha() / 100.0)
+        except Exception:
+            pass
+
+    def _set_alpha(self, pct, save=True):
+        self.store.settings["ui_alpha"] = max(
+            30, min(100, int(pct)))
+        if save:
+            self.store.save_settings()
+        self._apply_alpha()
+
+    def open_opacity(self):
+        if self._opw is not None and \
+                self._opw["win"].winfo_exists():
+            self._opw["win"].lift()
+            return
+        tk = self.tk
+        win = tk.Toplevel(self.root)
+        win.title("Content opacity")
+        win.configure(bg=BG)
+        win.geometry("340x180")
+        win.resizable(False, False)
+        tk.Label(win, text="CONTENT OPACITY", bg=BG, fg=GREEN,
+                 font=(FONT, 11, "bold")).pack(anchor="w", padx=14,
+                                               pady=(12, 0))
+        tk.Label(win, text="How solid the cards and text are. "
+                           "The frame has its own setting "
+                           "(Settings > Frame).", bg=BG,
+                 fg=GREEN_DIM, font=(FONT, 9), justify="left",
+                 wraplength=310).pack(anchor="w", padx=14)
+        var = tk.IntVar(value=self._ui_alpha())
+        val = tk.Label(win, text="%d%%" % var.get(), bg=BG,
+                       fg=GREEN, font=(FONT, 12, "bold"))
+        val.pack(pady=(6, 0))
+
+        def slide(v):
+            pct = int(float(v))
+            self._set_alpha(pct, save=False)
+            val.configure(text="%d%%" % pct)
+
+        sc = tk.Scale(win, from_=30, to=100, orient="horizontal",
+                      variable=var, showvalue=False, bg=BG,
+                      fg=GREEN, troughcolor=PANEL2,
+                      highlightthickness=0, bd=0,
+                      activebackground=GREEN, command=slide)
+        sc.pack(fill="x", padx=14)
+        sc.bind("<ButtonRelease-1>",
+                lambda e: self.store.save_settings())
+
+        def close():
+            self.store.save_settings()
+            self._opw = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", close)
+        self._opw = {"win": win, "var": var}
 
     # ---- the header Menu ------------------------------------------
     # One Menu button holds what used to be a row of header
@@ -1525,6 +1619,9 @@ class App:
                 label=("✓ " if cur_bg == mode else "   ")
                 + "Frame: " + label,
                 command=lambda md=mode: self._set_chat_bg(md))
+        smenu.add_separator()
+        smenu.add_command(label="Content opacity…",
+                          command=self.open_opacity)
         menu.add_cascade(label="Settings", menu=smenu)
         menu.add_separator()
         menu.add_command(label="System prompt…",

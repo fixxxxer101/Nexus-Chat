@@ -5,6 +5,21 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.18.0 — 2026-11-21
+Three frame fixes in one: (1) the magenta outline is gone -
+a card's backing colour lives on its underlay canvas as
+well as its frame, and switching Frame modes now updates
+both (before, the canvas kept the old punch colour, tracing
+every card in magenta after a toggle back to Black).
+(2) The four main cards get a bright green perimeter edge,
+so they keep their definition when the frame vanishes.
+(3) A content opacity slider (Menu > Settings > Content
+opacity…): how solid everything that isn't the frame is,
+30-100%, live while you drag, remembered across restarts.
+With Frame: Transparent the frame stays fully gone at any
+slider value; with Frame: Black the whole window fades
+together (window alpha is per-window in Tk).
+
 ## 1.17.0 — 2026-11-21
 The transparency moves to where it was meant to be: the
 FRAME around the cards. Menu > Settings > Frame now toggles
