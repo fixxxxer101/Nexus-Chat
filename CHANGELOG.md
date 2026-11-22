@@ -5,6 +5,20 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.21.2 — 2026-11-21
+Two fixes. The 1.21.1 bubbles lost their fills
+entirely: the content frame inside the bubble canvas
+is opaque and covered the whole bubble, hiding the
+painted background beneath it. The content is now
+inset 6px on every side, so the painted rounded rect
+shows as the bubble's corners and edge ring around
+the frame's own matching fill. And the dialogs
+(Update, Model Manager, and the rest) now get the
+app icon and the system-theme title bar like the
+main window - the theme is re-applied just after a
+dialog appears, because Windows resets it when set
+before the window is first shown.
+
 ## 1.21.1 — 2026-11-21
 Chat bubbles rebuilt on a sound mechanism. The bubble
 is now a single canvas that carries its content and

@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.21.1"
+VERSION = "1.21.2"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -365,6 +365,39 @@ def apply_titlebar_theme(win):
                 break
     except Exception:
         pass
+
+
+def app_icon_path():
+    """The installed .ico the main window uses (Windows
+    only); None anywhere it does not exist."""
+    if not IS_WINDOWS:
+        return None
+    ico = os.path.join(os.path.dirname(DATA_DIR),
+                       "nexus-chat.ico")
+    return ico if os.path.isfile(ico) else None
+
+
+def style_window(win):
+    """Give a dialog the app's icon and a title bar that
+    follows the system theme. The theme is applied now
+    and again shortly after the window appears: set
+    before a window is first shown, Windows resets it,
+    which is why the main window (re-themed as it comes
+    to the front) went dark but the dialogs stayed
+    white."""
+    ico = app_icon_path()
+    if ico:
+        try:
+            win.iconbitmap(ico)
+        except Exception:
+            pass
+    apply_titlebar_theme(win)
+    for delay in (80, 300):
+        try:
+            win.after(delay,
+                      lambda w=win: apply_titlebar_theme(w))
+        except Exception:
+            pass
 
 
 def est_tokens(text):
@@ -1573,6 +1606,16 @@ class BubbleCanvas(tk.Canvas):
     the bubble, clipping every bubble's bottom half
     away while the text and spacing stayed perfect."""
 
+    # The content frame is inset by this much on every
+    # side. It has to be: the frame is opaque, so if it
+    # covered the whole bubble it would hide the painted
+    # background completely (first version did exactly
+    # that - the fills vanished). Inset, the painted
+    # rounded rect shows as a ring around the frame's own
+    # fill: corners and edge line from the painting, the
+    # middle from the frame, all one colour.
+    PAD = 6
+
     def __init__(self, master, fill, outline,
                  radius=RADIUS_BUBBLE, bg=None):
         super().__init__(master, bg=bg if bg is not None
@@ -1582,7 +1625,7 @@ class BubbleCanvas(tk.Canvas):
         self._outline = outline
         self._radius = radius
         self.content = tk.Frame(self, bg=fill)
-        self._win = self.create_window(0, 0,
+        self._win = self.create_window(self.PAD, self.PAD,
                                        window=self.content,
                                        anchor="nw")
         self.content.bind("<Configure>", self._sync_size)
@@ -1616,15 +1659,17 @@ class BubbleCanvas(tk.Canvas):
                 return
         except Exception:
             return
-        w = self.content.winfo_reqwidth()
-        h = self.content.winfo_reqheight()
-        if w <= 1 or h <= 1:
+        cw = self.content.winfo_reqwidth()
+        ch = self.content.winfo_reqheight()
+        if cw <= 1 or ch <= 1:
             return
+        w = cw + 2 * self.PAD
+        h = ch + 2 * self.PAD
         if (w, h) != (int(self.cget("width")),
                       int(self.cget("height"))):
-            self.itemconfigure(self._win, width=w, height=h)
+            self.itemconfigure(self._win, width=cw, height=ch)
             self.configure(width=w, height=h)
-        self._arm_check(w, h)
+        self._arm_check(cw, ch)
 
     def _arm_check(self, w, h):
         # A sync can run before the mutation's own layout
@@ -2131,7 +2176,7 @@ class App:
             return
         tk = self.tk
         win = tk.Toplevel(self.root)
-        apply_titlebar_theme(win)
+        style_window(win)
         win.title("Content opacity")
         win.configure(bg=BG)
         win.geometry("340x180")
@@ -2287,7 +2332,7 @@ class App:
         what the model is told stays hidden."""
         tk = self.tk
         win = tk.Toplevel(self.root)
-        apply_titlebar_theme(win)
+        style_window(win)
         win.title("System Prompt")
         win.geometry("700x780")
         win.configure(bg=BG)
@@ -2993,7 +3038,7 @@ class App:
             except Exception:
                 self._mdl = None
         win = tk.Toplevel(self.root)
-        apply_titlebar_theme(win)
+        style_window(win)
         win.title("Model Manager")
         win.geometry("580x620")
         win.minsize(500, 460)
@@ -4093,7 +4138,7 @@ class App:
             except Exception:
                 self._upd = None
         win = tk.Toplevel(self.root)
-        apply_titlebar_theme(win)
+        style_window(win)
         win.title("Update Nexus Chat")
         win.geometry("580x470")
         win.configure(bg=BG)
@@ -4282,7 +4327,7 @@ class App:
             except Exception:
                 self._ctl = None
         win = tk.Toplevel(self.root)
-        apply_titlebar_theme(win)
+        style_window(win)
         win.title("Ollama Controller")
         win.geometry("500x540")
         win.minsize(440, 480)
@@ -4498,7 +4543,7 @@ class App:
     def open_memory(self):
         tk = self.tk
         win = tk.Toplevel(self.root)
-        apply_titlebar_theme(win)
+        style_window(win)
         win.title("Nexus Chat — Memory")
         win.geometry("560x520")
         win.configure(bg=BG)
