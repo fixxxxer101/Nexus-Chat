@@ -5,6 +5,13 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.9.1 — 2026-11-21
+Fix: bevels on every raised surface — a light line along the
+top/left edges and a dark line along the bottom/right (green
+family, amber for the user's bubbles, orange for primary
+buttons), so the stacked layers read as separate levels
+instead of blending together.
+
 ## 1.9.0 — 2026-11-21
 Visible versioning: the version shows in the header, the
 window title, and the Update window. (This release was first

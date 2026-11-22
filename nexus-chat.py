@@ -64,7 +64,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 IS_WINDOWS = os.name == "nt"
 OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
 if IS_WINDOWS:
@@ -104,6 +104,15 @@ BUBBLE_BOT_EDGE = "#1e3325"
 BUBBLE_USER = "#1d1307"  # user message bubble (dark amber)
 BUBBLE_USER_EDGE = "#3d290f"
 BORDER = "#1e3325"       # soft outline for fields and bubbles
+# Bevels: a light line on the top/left edges of a raised surface
+# and a near-black line on the bottom/right, so the layers read
+# as stacked instead of blending into each other.
+BEVEL_LIGHT = "#477a58"
+BEVEL_DARK = "#010302"
+BEVEL_AMBER_LIGHT = "#8a5f22"
+BEVEL_AMBER_DARK = "#060300"
+BEVEL_ORANGE_LIGHT = "#ffc98a"
+BEVEL_ORANGE_DARK = "#8a4a08"
 GREEN = "#35ff69"
 GREEN_DIM = "#3bb96a"
 GREEN_FAINT = "#1c5c36"
@@ -623,6 +632,30 @@ def draw_rounded_rect(canvas, x0, y0, x1, y1, r, **opts):
                                  smooth=True, splinesteps=16, **opts)
 
 
+def draw_beveled_rect(canvas, x0, y0, x1, y1, r, fill, light,
+                      dark):
+    """A rounded rect with a bevel: a light line traced along
+    the top and left edges and a dark line along the bottom and
+    right, so a raised surface separates from the layer behind
+    it. The point list traces clockwise from the top edge, so
+    the two halves of the outline split exactly at the right-
+    top and left-bottom corners."""
+    pts = _rounded_points(x0, y0, x1, y1, r)
+    pid = canvas.create_polygon(pts, smooth=True, splinesteps=16,
+                                fill=fill, outline="")
+    p = [(pts[i], pts[i + 1]) for i in range(0, len(pts), 2)]
+    top = [p[10], p[11], p[0], p[1], p[2], p[3]]
+    bot = [p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10]]
+
+    def flat(seq):
+        return [c for pt in seq for c in pt]
+    canvas.create_line(flat(top), fill=light, width=1,
+                       smooth=True, splinesteps=8)
+    canvas.create_line(flat(bot), fill=dark, width=1,
+                       smooth=True, splinesteps=8)
+    return pid
+
+
 class RoundedButton(tk.Canvas):
     """A button with genuinely rounded corners, drawn on a canvas -
     stock Tk buttons are rectangles and cannot be rounded. Speaks
@@ -710,8 +743,14 @@ class RoundedButton(tk.Canvas):
         # rectangle with a defect, not as a style.
         r = self._radius if self._radius is not None \
             else (h - 2) / 2.0
-        draw_rounded_rect(self, 1, 1, w - 1, h - 1, r,
-                          fill=fill, outline=outline, width=1)
+        if self._kind == "primary":
+            light, dark = BEVEL_ORANGE_LIGHT, BEVEL_ORANGE_DARK
+        elif not self._enabled:
+            light, dark = BORDER, BEVEL_DARK
+        else:
+            light, dark = BEVEL_LIGHT, BEVEL_DARK
+        draw_beveled_rect(self, 1, 1, w - 1, h - 1, r,
+                          fill, light, dark)
         self.create_text(w / 2.0, h / 2.0, text=self._text,
                          fill=self._fg or textcol, font=self._font)
 
@@ -758,9 +797,12 @@ class BubbleFrame(tk.Frame):
         if w <= 1 or h <= 1:
             return
         self._cv.delete("all")
-        draw_rounded_rect(self._cv, 1, 1, w - 1, h - 1, self._radius,
-                          fill=self._fill, outline=self._outline,
-                          width=1)
+        if self._outline == BUBBLE_USER_EDGE:
+            light, dark = BEVEL_AMBER_LIGHT, BEVEL_AMBER_DARK
+        else:
+            light, dark = BEVEL_LIGHT, BEVEL_DARK
+        draw_beveled_rect(self._cv, 1, 1, w - 1, h - 1,
+                          self._radius, self._fill, light, dark)
 
 
 class App:
