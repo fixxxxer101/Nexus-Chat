@@ -5,6 +5,15 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.37.0 — 2026-11-22
+Menu → README…: the manual lives in the app now. The
+window shows your checkout's README (the copy that
+matches the installed version, labelled with its path),
+falling back to GitHub's when no checkout copy exists.
+Markdown renders readably - headings, bold, code,
+links - and Copy all puts the raw text on the
+clipboard.
+
 ## 1.36.1 — 2026-11-22
 README caught up (Clint: "its been neglected") and it
 now carries a status marker - "README status: current

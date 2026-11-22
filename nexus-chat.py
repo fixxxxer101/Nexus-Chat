@@ -89,7 +89,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.36.1"
+VERSION = "1.37.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -106,6 +106,12 @@ VERSION_URL = os.environ.get(
     "NEXUS_VERSION_URL",
     "https://raw.githubusercontent.com/fixxxxer101/"
     "Nexus-Gate/main/nexus-chat.py")
+# The README the Menu's README… window falls back to when
+# no local checkout copy exists.
+README_URL = os.environ.get(
+    "NEXUS_README_URL",
+    "https://raw.githubusercontent.com/fixxxxer101/"
+    "Nexus-Gate/main/README.md")
 HF_API = os.environ.get("NEXUS_HF", "https://huggingface.co")
 if IS_WINDOWS:
     _app_home = os.path.join(
@@ -2653,6 +2659,7 @@ class App:
         self._fdl = None               # in-flight file download
         self._imw = None               # Image Models window
         self._logwin = None            # Error Log window
+        self._readme_win = None        # README window
         # Errors land in the log file, where the Error Log
         # window (Menu -> Error Log...) can show them: UI
         # callback exceptions and worker-thread exceptions
@@ -3214,6 +3221,8 @@ class App:
                          command=self.open_kbases)
         menu.add_command(label="Error Log…",
                          command=self.open_log)
+        menu.add_command(label="README…",
+                         command=self.open_readme)
         menu.add_separator()
         menu.add_command(label="Update Nexus Gate…",
                          command=self.open_update)
@@ -5608,6 +5617,17 @@ class App:
                         self._begin_stream(model, messages)
                 elif kind == "version":
                     self._on_version(text)
+                elif kind == "readme":
+                    rw = self._readme_win
+                    if rw is not None:
+                        got, src = text
+                        if got is None:
+                            self._readme_fill(
+                                rw, "Could not load the "
+                                    "README.\n\n%s" % src,
+                                "Fetch failed")
+                        else:
+                            self._readme_fill(rw, got, src)
                 elif kind == "img_log":
                     if self._img_job is not None:
                         self._img_job["last_log"] = text
@@ -7303,6 +7323,178 @@ class App:
         except Exception:
             pass
 
+    # ---- README window ----------------------------------
+    # Menu → README…: the manual, inside the app. The
+    # checkout's copy wins (it matches the installed
+    # version); GitHub's is the fallback.
+    def open_readme(self):
+        tk = self.tk
+        if self._readme_win is not None:
+            try:
+                self._readme_win["win"].deiconify()
+                self._readme_win["win"].lift()
+                return
+            except Exception:
+                self._readme_win = None
+        win = tk.Toplevel(self.root)
+        style_window(win)
+        win.title("Nexus Gate README")
+        win.geometry("680x600")
+        win.minsize(480, 360)
+        win.configure(bg=BG)
+        rw = {"win": win, "md": "", "source": ""}
+        self._readme_win = rw
+        head = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG,
+                           height=56)
+        head.pack(side="top", fill="x", padx=10,
+                  pady=(10, 0))
+        head.pack_propagate(False)
+        tk.Label(head, text="README", bg=PANEL, fg=GREEN,
+                 font=(FONT, 13, "bold")).pack(side="left",
+                                               padx=16, pady=14)
+        RoundedButton(head, text="Copy all", kind="ghost",
+                      font=(FONT, 10, "bold"), bg=PANEL,
+                      command=lambda: self._readme_copy(rw)
+                      ).pack(side="right", padx=(0, 10),
+                             pady=10)
+        rw["src_lbl"] = tk.Label(
+            win, text="", bg=BG, fg=GREEN_DIM, font=(MONO, 8),
+            anchor="w")
+        rw["src_lbl"].pack(anchor="w", padx=14, pady=(8, 4),
+                           fill="x")
+        wrap = tk.Frame(win, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=10,
+                  pady=(0, 10))
+        text = tk.Text(wrap, bg=PANEL, fg=GREEN, bd=0,
+                       highlightthickness=1,
+                       highlightbackground=BORDER,
+                       highlightcolor=BORDER,
+                       insertbackground=ORANGE,
+                       font=(FONT, 10), wrap="word",
+                       padx=12, pady=10)
+        sb = RoundedScrollbar(wrap, command=text.yview,
+                              bg=BG)
+        text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", padx=(4, 0))
+        text.pack(side="left", fill="both", expand=True)
+        text.tag_configure("h1", font=(FONT, 15, "bold"),
+                           foreground=GREEN)
+        text.tag_configure("h2", font=(FONT, 12, "bold"),
+                           foreground=GREEN)
+        text.tag_configure("h3", font=(FONT, 11, "bold"),
+                           foreground=ORANGE)
+        text.tag_configure("bold", font=(FONT, 10, "bold"))
+        text.tag_configure("code", font=(MONO, 9),
+                           foreground=GREEN_DIM)
+        text.tag_configure("link", foreground=GREEN,
+                           underline=True)
+
+        def guard(e):
+            if e.state & 0x4:
+                return None
+            if e.keysym in ("Left", "Right", "Up", "Down",
+                            "Prior", "Next", "Home", "End",
+                            "Shift_L", "Shift_R"):
+                return None
+            return "break"
+
+        text.bind("<Key>", guard)
+        text.bind("<Button-2>", lambda e: "break")
+        rw["text"] = text
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: self._readme_close(rw))
+        md, path = local_readme()
+        if md is not None:
+            self._readme_fill(rw, md, "From your checkout: "
+                                     + path)
+        else:
+            self._readme_fill(rw, "Loading the README from "
+                                  "GitHub…", "No local copy "
+                                  "found - fetching…")
+
+            def work():
+                try:
+                    req = urllib.request.Request(
+                        README_URL,
+                        headers={"User-Agent": "Nexus-Gate"})
+                    with urllib.request.urlopen(
+                            req, timeout=20) as r:
+                        got = r.read().decode(
+                            "utf-8", "replace")
+                    self.events.put(("readme",
+                                     (got, "From GitHub: "
+                                           + README_URL)))
+                except Exception as e:
+                    self.events.put(("readme",
+                                     (None, str(e))))
+
+            threading.Thread(target=work, daemon=True).start()
+
+    def _readme_close(self, rw):
+        if self._readme_win is not rw:
+            return
+        self._readme_win = None
+        try:
+            rw["win"].destroy()
+        except Exception:
+            pass
+
+    def _readme_copy(self, rw):
+        if rw.get("md"):
+            self.root.clipboard_clear()
+            self.root.clipboard_append(rw["md"])
+
+    def _readme_fill(self, rw, md, source):
+        rw["md"] = md
+        rw["source"] = source
+        rw["src_lbl"].configure(text=source)
+        t = rw["text"]
+        t.delete("1.0", "end")
+        in_code = False
+        for line in md.splitlines():
+            s = line.rstrip()
+            if s.startswith("<!--"):
+                continue
+            if s.strip().startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                t.insert("end", s + "\n", "code")
+                continue
+            if s.startswith("### "):
+                t.insert("end", s[4:] + "\n", "h3")
+                continue
+            if s.startswith("## "):
+                t.insert("end", s[3:] + "\n", "h2")
+                continue
+            if s.startswith("# "):
+                t.insert("end", s[2:] + "\n", "h1")
+                continue
+            self._readme_inline(t, s)
+            t.insert("end", "\n")
+        t.yview_moveto(0)
+
+    _MD_TOKEN = re.compile(
+        r"(\*\*.+?\*\*|`[^`]+?`|\[[^\]]+?\]\([^)]+?\))")
+
+    def _readme_inline(self, t, s):
+        pos = 0
+        for mch in self._MD_TOKEN.finditer(s):
+            if mch.start() > pos:
+                t.insert("end", s[pos:mch.start()])
+            tok = mch.group(0)
+            if tok.startswith("**"):
+                t.insert("end", tok[2:-2], "bold")
+            elif tok.startswith("`"):
+                t.insert("end", tok[1:-1], "code")
+            else:
+                label = tok[1:tok.index("]")]
+                t.insert("end", label, "link")
+            pos = mch.end()
+        if pos < len(s):
+            t.insert("end", s[pos:])
+
     def _log_refresh(self, lw):
         text_str = read_log_tail()
         lw["text_str"] = text_str
@@ -8445,6 +8637,22 @@ def find_repo():
         if c and os.path.isdir(os.path.join(c, ".git")):
             return c
     return None
+
+
+def local_readme():
+    """(text, path) of the checkout's README.md, or
+    (None, None). The checkout is the version actually
+    installed, so its README is the right one to show."""
+    repo = find_repo()
+    if repo:
+        p = os.path.join(repo, "README.md")
+        if os.path.isfile(p):
+            try:
+                with open(p, encoding="utf-8") as f:
+                    return f.read(), p
+            except OSError:
+                pass
+    return None, None
 
 
 def installed_app_cmd():

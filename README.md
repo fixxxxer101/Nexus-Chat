@@ -1,8 +1,8 @@
 # Nexus Gate
 
-<!-- README-STATUS: matches Nexus Gate v1.36.1 -->
+<!-- README-STATUS: matches Nexus Gate v1.37.0 -->
 
-**README status: current as of Nexus Gate v1.36.1.**
+**README status: current as of Nexus Gate v1.37.0.**
 The app's header shows its version; if it shows a newer one than
 this line, this README has fallen behind and needs a catch-up —
 [CHANGELOG.md](CHANGELOG.md) is always current.
@@ -133,7 +133,7 @@ machine — no accounts, no cloud, nothing leaves the machine.
   never touches the original file.
 - **One Menu, thinking levels.** The header's **Menu** button
   holds the windows (System, Memory, Knowledge Bases, Ollama,
-  Model Manager, Image Models, Error Log), Settings (frame,
+  Model Manager, Image Models, Error Log, README), Settings (frame,
   content opacity, update checks, context size), Update,
   and a **thinking level** setting remembered per model —
   low / medium / high for gpt-oss, off / on for Qwen3-class
