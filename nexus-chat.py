@@ -79,7 +79,7 @@ APP_NAME = "Nexus Gate"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.33.0"
+VERSION = "1.34.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -4639,6 +4639,15 @@ class App:
                              cursor="hand2")
 
     # ---- fullscreen image view -------------------------
+    # Zoom ladder for the fullscreen view: (num, den)
+    # magnification pairs. Tk scales images by integer
+    # factors only, so the rungs are integers and unit
+    # fractions - the display is always re-derived from
+    # the original file at the chosen rung.
+    _FS_LADDER = [(1, 8), (1, 6), (1, 4), (1, 3), (1, 2),
+                  (1, 1), (2, 1), (3, 1), (4, 1), (6, 1),
+                  (8, 1)]
+
     def _img_open_fullscreen(self):
         rec = self._img_current
         if not rec or rec.get("pending"):
@@ -4657,48 +4666,198 @@ class App:
             win.attributes("-fullscreen", True)
         except Exception:
             pass
-        img = self._fit_photo(path, sw - 24, sh - 150)
-        if img is None:
+        try:
+            base = tk.PhotoImage(file=path)
+        except Exception:
             win.destroy()
             return
-        lbl = tk.Label(win, image=img, bg=BG)
-        lbl.pack(expand=True)
-        lbl.bind("<Button-1>",
-                 lambda e: self._img_close_fullscreen())
         bar = tk.Frame(win, bg=PANEL)
         bar.pack(side="bottom", fill="x")
+        cont = tk.Frame(win, bg=BG)
+        cont.pack(side="top", fill="both", expand=True)
+        lbl = tk.Label(cont, bg=BG)
         txt = tk.Frame(bar, bg=PANEL)
         txt.pack(side="left", fill="x", expand=True,
                  padx=14, pady=8)
         tk.Label(txt, text=rec.get("prompt") or "",
                  bg=PANEL, fg=GREEN, font=(FONT, 11),
-                 wraplength=sw - 340, justify="left",
+                 wraplength=sw - 620, justify="left",
                  anchor="w").pack(fill="x")
-        meta = self._img_meta_text(rec)
-        tk.Label(txt, text=meta, bg=PANEL, fg=GREEN_DIM,
-                 font=(FONT, 9), wraplength=sw - 340,
-                 justify="left", anchor="w").pack(fill="x",
-                                                  pady=(3, 0))
+        tk.Label(txt, text=self._img_meta_text(rec),
+                 bg=PANEL, fg=GREEN_DIM, font=(FONT, 9),
+                 wraplength=sw - 620, justify="left",
+                 anchor="w").pack(fill="x", pady=(3, 0))
         btns = tk.Frame(bar, bg=PANEL)
         btns.pack(side="right", padx=14, pady=8)
+        RoundedButton(btns, text="Fit", kind="quiet",
+                      bg=PANEL, font=(FONT, 10), pady=6,
+                      command=self._fs_fit).pack(side="left")
+        RoundedButton(btns, text="1:1", kind="quiet",
+                      bg=PANEL, font=(FONT, 10), pady=6,
+                      command=self._fs_actual).pack(
+                          side="left", padx=(8, 0))
+        zoom_lbl = tk.Label(btns, text="", bg=PANEL,
+                            fg=GREEN_DIM, font=(FONT, 10))
+        zoom_lbl.pack(side="left", padx=(10, 2))
         RoundedButton(btns, text="Use settings",
                       kind="primary", bg=PANEL,
                       font=(FONT, 10, "bold"), pady=6,
                       command=self._fs_use_settings).pack(
-                          side="left")
+                          side="left", padx=(8, 0))
         RoundedButton(btns, text="Close", kind="quiet",
                       bg=PANEL, font=(FONT, 10), pady=6,
                       command=self._img_close_fullscreen
                       ).pack(side="left", padx=(8, 0))
+        self._fs = {"win": win, "rec": rec, "base": base,
+                    "photo": None, "cont": cont, "lbl": lbl,
+                    "zoom_lbl": zoom_lbl, "mag": (1, 1),
+                    "ox": 0, "oy": 0, "drag": None}
+        lbl.bind("<Button-1>", self._fs_press)
+        lbl.bind("<B1-Motion>", self._fs_drag)
+        lbl.bind("<ButtonRelease-1>", self._fs_release)
         win.bind("<Escape>",
                  lambda e: self._img_close_fullscreen())
-        self._fs = {"win": win, "photo": img, "rec": rec}
+        win.bind_all("<MouseWheel>", self._fs_wheel)
+        win.bind_all("<Button-4>", self._fs_wheel)
+        win.bind_all("<Button-5>", self._fs_wheel)
         win.focus_set()
+        win.update_idletasks()
+        self._fs_fit()
+
+    def _fs_fit_mag(self):
+        fs = self._fs
+        bw, bh = fs["base"].width(), fs["base"].height()
+        cw = fs["cont"].winfo_width()
+        ch = fs["cont"].winfo_height()
+        if cw < 50 or ch < 50:
+            cw = self.root.winfo_screenwidth() - 24
+            ch = self.root.winfo_screenheight() - 170
+        if bw > cw or bh > ch:
+            f = 1
+            while bw // f > cw or bh // f > ch:
+                f += 1
+            return (1, f)
+        if bw < cw and bh < ch:
+            z = min(cw // max(bw, 1), ch // max(bh, 1))
+            return (max(z, 1), 1)
+        return (1, 1)
+
+    def _fs_fit(self):
+        if not self._fs:
+            return
+        self._fs["mag"] = self._fs_fit_mag()
+        self._fs["ox"] = 0
+        self._fs["oy"] = 0
+        self._fs_render()
+
+    def _fs_actual(self):
+        if not self._fs:
+            return
+        self._fs["mag"] = (1, 1)
+        self._fs["ox"] = 0
+        self._fs["oy"] = 0
+        self._fs_render()
+
+    def _fs_render(self):
+        fs = self._fs
+        if not fs:
+            return
+        num, den = fs["mag"]
+        base = fs["base"]
+        # The ladder's rungs are integers and unit
+        # fractions only (Tk's transforms are per-axis
+        # integers), so exactly one of these applies.
+        if den == 1 and num > 1:
+            img = base.zoom(num)
+        elif num == 1 and den > 1:
+            img = base.subsample(den)
+        else:
+            img = base
+        fs["photo"] = img
+        fs["lbl"].configure(image=img)
+        fs["zoom_lbl"].configure(
+            text="%d%%" % round(100.0 * num / den))
+        self._fs_place()
+
+    def _fs_place(self):
+        fs = self._fs
+        if not fs or fs["photo"] is None:
+            return
+        cont = fs["cont"]
+        cw, ch = cont.winfo_width(), cont.winfo_height()
+        dw, dh = fs["photo"].width(), fs["photo"].height()
+        if dw <= cw:
+            fs["ox"] = 0
+        else:
+            lim = (dw - cw) // 2
+            fs["ox"] = max(-lim, min(lim, fs["ox"]))
+        if dh <= ch:
+            fs["oy"] = 0
+        else:
+            lim = (dh - ch) // 2
+            fs["oy"] = max(-lim, min(lim, fs["oy"]))
+        fs["lbl"].place(x=cw // 2 + fs["ox"],
+                        y=ch // 2 + fs["oy"], anchor="center")
+        fs["lbl"].configure(
+            cursor="fleur" if (dw > cw or dh > ch) else "")
+
+    def _fs_wheel(self, e):
+        fs = self._fs
+        if not fs:
+            return
+        if getattr(e, "num", 0) == 4 or \
+                getattr(e, "delta", 0) > 0:
+            step = 1
+        elif getattr(e, "num", 0) == 5 or \
+                getattr(e, "delta", 0) < 0:
+            step = -1
+        else:
+            return
+        cur = fs["mag"][0] / fs["mag"][1]
+        vals = [n / d for n, d in self._FS_LADDER]
+        idx = min(range(len(vals)),
+                  key=lambda i: abs(vals[i] - cur))
+        idx = max(0, min(len(vals) - 1, idx + step))
+        if self._FS_LADDER[idx] != fs["mag"]:
+            fs["mag"] = self._FS_LADDER[idx]
+            self._fs_render()
+
+    def _fs_press(self, e):
+        if self._fs:
+            self._fs["drag"] = (e.x_root, e.y_root,
+                                self._fs["ox"], self._fs["oy"],
+                                False)
+
+    def _fs_drag(self, e):
+        fs = self._fs
+        if not fs or not fs["drag"]:
+            return
+        x0, y0, ox0, oy0, _m = fs["drag"]
+        dx, dy = e.x_root - x0, e.y_root - y0
+        if abs(dx) + abs(dy) > 4:
+            fs["drag"] = (x0, y0, ox0, oy0, True)
+            fs["ox"], fs["oy"] = ox0 + dx, oy0 + dy
+            self._fs_place()
+
+    def _fs_release(self, _e):
+        fs = self._fs
+        if not fs:
+            return
+        moved = fs["drag"][4] if fs["drag"] else False
+        fs["drag"] = None
+        if not moved:
+            # A plain click (not a pan drag): back to
+            # normal size, as before.
+            self._img_close_fullscreen()
 
     def _img_close_fullscreen(self):
         if self._fs:
             try:
-                self._fs["win"].destroy()
+                win = self._fs["win"]
+                win.unbind_all("<MouseWheel>")
+                win.unbind_all("<Button-4>")
+                win.unbind_all("<Button-5>")
+                win.destroy()
             except Exception:
                 pass
             self._fs = None

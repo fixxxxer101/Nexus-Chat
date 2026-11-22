@@ -34,7 +34,9 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   you can browse other images mid-run without losing
   sight of it. Click a shown image to view it fullscreen
   with its metadata and a Use settings button along the
-  bottom; click again to return.
+  bottom; click again to return. In fullscreen, Fit and
+  1:1 buttons and the mouse wheel zoom the picture
+  (drag to pan when zoomed in).
 - **Thinking traces, when the model thinks.** Qwen3 replies carry
   a saved thinking trace, shown as a collapsible **▸ Thinking**
   block — click to read exactly how the model reasoned, click

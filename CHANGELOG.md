@@ -5,6 +5,18 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.34.0 — 2026-11-22
+The fullscreen view zooms. Fit and 1:1 (actual size)
+buttons sit in its bar next to a live zoom percentage,
+the mouse wheel steps the magnification up and down
+(12% to 800%), and a zoomed-in picture can be dragged
+around to pan - clamped so it can't be lost off the
+edge. A plain click still closes the view (a drag
+doesn't), as do Close and Esc. Tk scales images by
+integer factors only, so the wheel steps a ladder of
+integer and unit-fraction rungs, always re-derived
+from the original file.
+
 ## 1.33.0 — 2026-11-22
 The image info belongs to the image view, not the
 composer (Clint's layout call). The block under a shown
