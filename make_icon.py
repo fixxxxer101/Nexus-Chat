@@ -8,6 +8,8 @@ Usage: python3 make_icon.py [chat|power] [output.png]
 Two styles: "chat" (the Nexus Chat bubble) and "power" (the
 Ollama Controller power symbol). Default: chat, icon.png.
 Drawn at 1024, box-downsampled to 512 for smooth edges.
+An output name ending in .ico writes a Windows icon instead
+(the PNG payload wrapped in an ICO container).
 """
 import struct
 import sys
@@ -126,12 +128,24 @@ def png_bytes(style="chat"):
             chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
+def ico_bytes(style="chat"):
+    """A Windows .ico holding the PNG image. The entry declares
+    256 (byte value 0); Windows reads the PNG's real size."""
+    png = png_bytes(style)
+    header = struct.pack("<HHH", 0, 1, 1)
+    entry = struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32,
+                        len(png), len(header) + 16)
+    return header + entry + png
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     style = "chat"
     if args and args[0] in PIXELS:
         style = args.pop(0)
     out = args[0] if args else "icon.png"
+    data = ico_bytes(style) if out.lower().endswith(".ico") \
+        else png_bytes(style)
     with open(out, "wb") as f:
-        f.write(png_bytes(style))
+        f.write(data)
     print("wrote", out, "(%s)" % style)

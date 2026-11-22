@@ -52,26 +52,45 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   loaded and how much RAM it holds, and **Start**, **Stop** (frees
   ALL its RAM) and **Unload model** buttons.
 
-## Setup on the Pi
+## Setup on the Pi (Linux)
 
-One script does everything — Ollama, the service check, both models,
+One script does everything — Ollama, the service check, the models,
 and the app — detecting and skipping whatever already exists:
 
 ```
 bash setup.sh
 ```
 
-Re-running it after a `git pull` is also how you update: only the
-missing pieces happen. (`install.sh` on its own just reinstalls the
-app and its desktop icon.)
+(`install.sh` on its own just reinstalls the app and its desktop
+icon.) Then click the **Nexus Chat** icon on the desktop.
 
-Then click the **Nexus Chat** icon on the desktop.
+## Setup on Windows
+
+Needs Python 3 (with Tk — the standard python.org installer
+includes it). Clone this repo, then double-click **`setup.bat`**:
+it installs Ollama if it's missing (the official installer, which
+you click through once), starts it, pulls the models, installs
+the app to `%LOCALAPPDATA%\NexusChat`, and puts a **Nexus Chat**
+shortcut on the desktop. `install.bat` reinstalls just the app.
+The Ollama controller works there too — Start launches Ollama,
+Stop kills it and frees all its RAM.
+
+## Updating
+
+The sidebar's **Update** button does it from inside the app: it
+runs setup in your git checkout (which pulls the latest code
+first), streams the output into a window, and offers a Relaunch
+when it's done. No terminal needed, on either platform. The
+installers record the checkout's path (`repo.txt` in the data
+dir) so the button can always find it.
 
 ## Where things live
 
-- App: `~/.local/bin/nexus-chat.py`
-- Chats, memory, settings: `~/.local/share/nexus-chat/`
-- Error log: `~/.local/state/nexus-chat.log`
+- Linux — App: `~/.local/bin/nexus-chat.py`; data:
+  `~/.local/share/nexus-chat/`; log:
+  `~/.local/state/nexus-chat.log`
+- Windows — App: `%LOCALAPPDATA%\NexusChat\nexus-chat.py`;
+  data: `%LOCALAPPDATA%\NexusChat\data\`
 
 Pure Python 3 + Tkinter + urllib — no extra packages.
 Backend override for testing: `NEXUS_OLLAMA=http://host:port`.

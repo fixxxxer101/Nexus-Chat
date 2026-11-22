@@ -58,6 +58,13 @@ rm -f "$BIN/ollama-controller.py" \
       "$DESKTOP_DIR/ollama-controller.desktop" \
       "$ICON_DIR/ollama-controller.png"
 
+# Record where this checkout lives so the app's Update button can
+# find it later (it runs setup.sh right here, no terminal needed).
+DATA_DIR="$HOME/.local/share/nexus-chat"
+mkdir -p "$DATA_DIR"
+printf '%s' "$SRC" > "$DATA_DIR/repo.txt"
+echo "recorded checkout path for the in-app Update button"
+
 # Mark the launchers trusted so a double-click just opens the app -
 # no untrusted-launcher prompt, no "open with" question.
 if command -v gio >/dev/null 2>&1; then

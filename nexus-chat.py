@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Nexus Chat - a local AI chat desktop app for the Raspberry Pi 5.
+"""Nexus Chat - a local AI chat desktop app. Built for Clint's
+Raspberry Pi 5, runs on any Linux PC, and on Windows too.
 
 Talks to Ollama running on the same machine (Qwen3 by default).
 Black / green / orange. No accounts, no cloud: chats, memory and
-logs all live on the Pi under ~/.local/share/nexus-chat/.
+logs all live on this machine (Linux: ~/.local/share/nexus-chat/;
+Windows: %LOCALAPPDATA%\\NexusChat\\data).
 
 Features (Clint's spec, 2026-11-21):
   - Thinking traces: when the model thinks (Qwen3), each reply's
@@ -17,6 +19,15 @@ Features (Clint's spec, 2026-11-21):
   - Glass box: the system prompt is visible and editable in the
     app (System button), and the same window previews the EXACT
     context the model receives for the open chat - nothing hidden.
+    System prompts can be saved as named presets (save / delete /
+    pick in the System window) and switched right in the header
+    from the Prompt picker, next to the model picker.
+  - An Update button (sidebar) pulls the latest version from the
+    git checkout and reinstalls, streaming setup's output into a
+    window - no terminal needed. One codebase, both platforms:
+    the single-instance lock, data paths, fonts and the Ollama
+    controller's start/stop branch per OS (systemd + sudo on
+    Linux; the Ollama app + taskkill on Windows).
   - Chat logs: every conversation auto-saved, listed in a sidebar.
   - Long-term memory, both modes: manual (view / edit / add) and
     automatic (the model proposes entries; nothing is kept until
@@ -34,10 +45,10 @@ Pure Python 3 + Tkinter + urllib. No extra packages.
 Backend URL override for testing: NEXUS_OLLAMA=http://host:port
 """
 
-import fcntl
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -46,14 +57,22 @@ import urllib.request
 import urllib.error
 
 APP_NAME = "Nexus Chat"
+IS_WINDOWS = os.name == "nt"
 OLLAMA = os.environ.get("NEXUS_OLLAMA", "http://localhost:11434")
-DATA_DIR = os.path.join(os.path.expanduser("~"), ".local", "share",
-                        "nexus-chat")
+if IS_WINDOWS:
+    _app_home = os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+        "NexusChat")
+    DATA_DIR = os.path.join(_app_home, "data")
+    LOG_PATH = os.path.join(DATA_DIR, "nexus-chat.log")
+else:
+    DATA_DIR = os.path.join(os.path.expanduser("~"), ".local",
+                            "share", "nexus-chat")
+    LOG_PATH = os.path.join(os.path.expanduser("~"), ".local",
+                            "state", "nexus-chat.log")
 CHATS_DIR = os.path.join(DATA_DIR, "chats")
 MEMORY_PATH = os.path.join(DATA_DIR, "memory.json")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
-LOG_PATH = os.path.join(os.path.expanduser("~"), ".local", "state",
-                        "nexus-chat.log")
 DEFAULT_MODELS = ["qwen3:4b", "qwen3:1.7b", "qwen2.5:3b"]
 NUM_CTX = 4096
 # context budget (rough tokens, chars/4): compress when the assembled
@@ -88,8 +107,12 @@ ORANGE_INK = "#170c00"   # text on orange fills
 USER_TEXT = "#ffd9a3"    # user message text (warm, in-family)
 THINK_GREEN = "#5fbf8a"
 ERROR = "#ff5a3c"
-FONT = "DejaVu Sans"
-MONO = "DejaVu Sans Mono"
+if IS_WINDOWS:
+    FONT = "Segoe UI"
+    MONO = "Consolas"
+else:
+    FONT = "DejaVu Sans"
+    MONO = "DejaVu Sans Mono"
 RADIUS_BUBBLE = 22
 RADIUS_FIELD = 20
 RADIUS_CARD = 18      # header / sidebar / bottom bar cards
@@ -471,9 +494,34 @@ def propose_memories(store, chat, model):
 
 # ------------------------------------------------- Ollama controller
 
+def ollama_exe():
+    """Path of the Windows Ollama executable, or None."""
+    if not IS_WINDOWS:
+        return None
+    cands = []
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        cands.append(os.path.join(local, "Programs", "Ollama",
+                                  "ollama.exe"))
+    prog = os.environ.get("ProgramFiles", "")
+    if prog:
+        cands.append(os.path.join(prog, "Ollama", "ollama.exe"))
+    for cand in cands:
+        if os.path.isfile(cand):
+            return cand
+    return shutil.which("ollama")
+
+
 def service_state():
-    """'active', 'inactive', or whatever systemctl reports for the
-    Ollama service."""
+    """'active', 'inactive', or whatever the platform reports.
+    Linux: the systemd unit. Windows: Ollama is a user app, not a
+    service, so 'active' means its API answers."""
+    if IS_WINDOWS:
+        try:
+            api_get("/api/version")
+            return "active"
+        except Exception:
+            return "inactive"
     try:
         r = subprocess.run(["systemctl", "is-active", "ollama"],
                            capture_output=True, text=True, timeout=4)
@@ -508,6 +556,39 @@ def run_ctl(args):
         return r.returncode == 0, (out[0] if out else "")
     except Exception as e:
         return False, str(e)
+
+
+def ctl_service(action):
+    """Start or stop Ollama, per platform. (ok, error message).
+    Linux drives the systemd unit; Windows starts ollama.exe
+    detached, and stops it with taskkill - which frees ALL the
+    RAM it holds, the whole point of the Stop button."""
+    if IS_WINDOWS:
+        if action == "start":
+            exe = ollama_exe()
+            if not exe:
+                return False, "ollama.exe not found - is Ollama " \
+                              "installed?"
+            try:
+                subprocess.Popen(
+                    [exe, "serve"], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=0x00000008 | 0x00000200)
+                return True, ""
+            except Exception as e:
+                return False, str(e)
+        try:
+            r = subprocess.run(["taskkill", "/IM", "ollama.exe",
+                                "/F"], capture_output=True,
+                               text=True, timeout=20)
+            if r.returncode == 0:
+                return True, ""
+            out = (r.stderr or r.stdout or "").strip().splitlines()
+            return False, (out[0] if out else "taskkill failed")
+        except Exception as e:
+            return False, str(e)
+    return run_ctl(["systemctl", action, "ollama"])
 
 
 def gb(nbytes):
@@ -692,11 +773,20 @@ class App:
             "model", "qwen3:4b"))
         self._at_bottom = True
         self._ctl = None               # Ollama controller panel state
+        self._upd = None               # Update window state
 
         root.title(APP_NAME)
         root.geometry("1040x700")
         root.minsize(780, 540)
         root.configure(bg=BG)
+        if IS_WINDOWS:
+            ico = os.path.join(os.path.dirname(DATA_DIR),
+                               "nexus-chat.ico")
+            if os.path.isfile(ico):
+                try:
+                    root.iconbitmap(ico)
+                except Exception:
+                    pass
         self._build_layout()
         chats = self.store.sorted_chats()
         self.open_chat(chats[0] if chats else self.store.new_chat())
@@ -765,7 +855,11 @@ class App:
         RoundedButton(side, text="Delete chat", kind="quiet",
                       bg=PANEL, font=(FONT, 9),
                       command=self.delete_current
-                      ).pack(fill="x", padx=12, pady=12)
+                      ).pack(fill="x", padx=12, pady=(12, 6))
+        RoundedButton(side, text="Update", kind="ghost",
+                      bg=PANEL, font=(FONT, 9),
+                      command=self.open_update
+                      ).pack(fill="x", padx=12, pady=(0, 12))
 
         main = tk.Frame(body, bg=BG)
         main.pack(side="left", fill="both", expand=True)
@@ -1412,6 +1506,182 @@ class App:
         self.store.save_settings()
         self.root.destroy()
 
+    # ---- in-app update -------------------------------------------------
+    # The sidebar's Update button: runs the platform setup inside
+    # the git checkout (setup.sh / setup.bat), which pulls the
+    # latest code and reinstalls - the terminal flow, minus the
+    # terminal. Output streams into the window as it happens, and
+    # Relaunch starts the new version once setup succeeds.
+
+    def open_update(self):
+        tk = self.tk
+        if self._upd is not None:
+            try:
+                self._upd["win"].deiconify()
+                self._upd["win"].lift()
+                return
+            except Exception:
+                self._upd = None
+        win = tk.Toplevel(self.root)
+        win.title("Update Nexus Chat")
+        win.geometry("580x470")
+        win.configure(bg=BG)
+        upd = {"win": win, "queue": queue.Queue(), "running": False,
+               "ok": False, "drain_id": None}
+        self._upd = upd
+        tk.Label(win, text="UPDATE NEXUS CHAT", bg=BG, fg=GREEN,
+                 font=(FONT, 12, "bold")).pack(anchor="w", padx=12,
+                                               pady=(12, 2))
+        repo = find_repo()
+        if repo:
+            info = ("Pulls the latest version from your git "
+                    "checkout and reinstalls - models included, "
+                    "exactly what setup does in a terminal.\n"
+                    "Checkout: %s" % repo)
+        else:
+            info = ("This install does not know where its git "
+                    "checkout is, so it cannot update itself. Run "
+                    "setup once from a terminal inside the checkout "
+                    "- it records the path, and this button works "
+                    "from then on.")
+        tk.Label(win, text=info, bg=BG, fg=GREEN_DIM,
+                 font=(FONT, 9), justify="left",
+                 wraplength=540).pack(anchor="w", padx=12)
+        lwrap = BubbleFrame(win, fill=PANEL2, outline=BORDER,
+                            radius=RADIUS_PANEL, bg=BG)
+        lwrap.pack(fill="both", expand=True, padx=12, pady=8)
+        log_view = tk.Text(lwrap, bg=PANEL2, fg=GREEN_DIM, bd=0,
+                           highlightthickness=0, font=(MONO, 9),
+                           wrap="word", state="disabled")
+        log_view.pack(fill="both", expand=True, padx=9, pady=7)
+        status = tk.Label(win, text="", bg=BG, fg=ORANGE_DIM,
+                          font=(FONT, 9))
+        btnrow = tk.Frame(win, bg=BG)
+        btnrow.pack(fill="x", padx=12, pady=(0, 4))
+
+        def log_line(text):
+            log_view.configure(state="normal")
+            log_view.insert("end", text + "\n")
+            log_view.see("end")
+            log_view.configure(state="disabled")
+
+        def start():
+            if upd["running"] or not repo:
+                return
+            upd["running"] = True
+            upd["ok"] = False
+            run_btn.set_enabled(False)
+            relaunch_btn.set_enabled(False)
+            status.configure(text="Updating…")
+
+            def work():
+                if IS_WINDOWS:
+                    cmd = ["cmd", "/c", "setup.bat", "--no-pause"]
+                else:
+                    cmd = ["bash", "setup.sh"]
+                try:
+                    proc = subprocess.Popen(
+                        cmd, cwd=repo, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, text=True,
+                        bufsize=1)
+                    for line in proc.stdout:
+                        upd["queue"].put(("line", line.rstrip()))
+                    rc = proc.wait()
+                except Exception as e:
+                    upd["queue"].put(("line", "ERROR: %s" % e))
+                    rc = -1
+                upd["queue"].put(("done", rc))
+
+            threading.Thread(target=work, daemon=True).start()
+            drain()
+
+        def drain():
+            if self._upd is not upd:
+                return
+            try:
+                while True:
+                    kind, payload = upd["queue"].get_nowait()
+                    if kind == "line":
+                        log_line(payload)
+                    else:
+                        upd["running"] = False
+                        upd["ok"] = payload == 0
+                        run_btn.set_enabled(True)
+                        if upd["ok"]:
+                            status.configure(
+                                text="Update installed. Relaunch "
+                                     "to use the new version.")
+                            relaunch_btn.set_enabled(
+                                installed_app_cmd() is not None)
+                        else:
+                            status.configure(
+                                text="Update failed (exit %s) - "
+                                     "the log above shows why."
+                                     % payload)
+            except queue.Empty:
+                pass
+            upd["drain_id"] = self.root.after(90, drain)
+
+        def relaunch():
+            cmd = installed_app_cmd()
+            if not cmd:
+                status.configure(text="Cannot find the installed "
+                                      "app to relaunch.")
+                return
+            code = ("import subprocess, sys, time; "
+                    "time.sleep(1.2); "
+                    "subprocess.Popen(sys.argv[1:], "
+                    "close_fds=True)")
+            kw = {"stdin": subprocess.DEVNULL,
+                  "stdout": subprocess.DEVNULL,
+                  "stderr": subprocess.DEVNULL}
+            if IS_WINDOWS:
+                kw["creationflags"] = 0x00000008  # DETACHED_PROCESS
+            else:
+                kw["start_new_session"] = True
+            try:
+                subprocess.Popen([sys.executable, "-c", code] + cmd,
+                                 **kw)
+            except Exception as e:
+                status.configure(text="Relaunch failed: %s" % e)
+                return
+            self._upd = None
+            self._on_close()
+
+        run_btn = RoundedButton(btnrow, text="Check for updates",
+                                kind="primary",
+                                font=(FONT, 10, "bold"),
+                                command=start)
+        run_btn.pack(side="left")
+        run_btn.set_enabled(repo is not None)
+        relaunch_btn = RoundedButton(btnrow, text="Relaunch",
+                                     kind="ghost", font=(FONT, 10),
+                                     command=relaunch)
+        relaunch_btn.pack(side="left", padx=8)
+        relaunch_btn.set_enabled(False)
+        RoundedButton(btnrow, text="Close", kind="quiet",
+                      font=(FONT, 10),
+                      command=lambda: self._upd_close(upd)).pack(
+                          side="left")
+        status.pack(anchor="w", padx=12, pady=(0, 10))
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: self._upd_close(upd))
+
+    def _upd_close(self, upd):
+        if self._upd is not upd:
+            return
+        self._upd = None
+        if upd.get("drain_id"):
+            try:
+                self.root.after_cancel(upd["drain_id"])
+            except Exception:
+                pass
+        try:
+            upd["win"].destroy()
+        except Exception:
+            pass
+
     # ---- memory window -------------------------------------------------
     # ---- Ollama controller panel --------------------------------
     # A window inside Nexus Chat (the header's Ollama button): live
@@ -1469,16 +1739,14 @@ class App:
         ctl["start_btn"] = RoundedButton(
             row, text="Start", kind="primary", font=(FONT, 11, "bold"),
             padx=18, pady=8,
-            command=lambda: self._ctl_act(
-                ctl, ["systemctl", "start", "ollama"],
-                "Starting Ollama"))
+            command=lambda: self._ctl_act(ctl, "start",
+                                          "Starting Ollama"))
         ctl["start_btn"].pack(side="left")
         ctl["stop_btn"] = RoundedButton(
             row, text="Stop", kind="quiet", font=(FONT, 11, "bold"),
             padx=18, pady=8,
-            command=lambda: self._ctl_act(
-                ctl, ["systemctl", "stop", "ollama"],
-                "Stopping Ollama"))
+            command=lambda: self._ctl_act(ctl, "stop",
+                                          "Stopping Ollama"))
         ctl["stop_btn"].pack(side="left", padx=8)
         ctl["unload_btn"] = RoundedButton(
             row, text="Unload model", kind="ghost",
@@ -1598,7 +1866,7 @@ class App:
             ctl["models_box"].insert(
                 "end", "%s   (%s)" % (m["name"], gb(m.get("size", 0))))
 
-    def _ctl_act(self, ctl, args, verb):
+    def _ctl_act(self, ctl, action, verb):
         if self._ctl is not ctl or ctl["acting"]:
             return
         ctl["acting"] = True
@@ -1607,7 +1875,7 @@ class App:
             self._ctl_apply(ctl, ctl["snap"])
 
         def work():
-            ok, err = run_ctl(args)
+            ok, err = ctl_service(action)
             ctl["queue"].put(("acted", (ok, err)))
         threading.Thread(target=work, daemon=True).start()
 
@@ -1771,13 +2039,73 @@ class App:
         view.configure(state="disabled")
 
 
+def acquire_lock(path):
+    """Single-instance lock, per platform: flock on Linux,
+    msvcrt.locking on Windows. Returns the open file (keep it
+    referenced - the lock dies with it) or None when another
+    instance already holds it."""
+    f = open(path, "w")
+    try:
+        if IS_WINDOWS:
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+def find_repo():
+    """The Nexus Chat git checkout on this machine, if any: the
+    NEXUS_REPO override, the path the installer recorded in
+    DATA_DIR/repo.txt, or the conventional ~/Nexus-Chat clone."""
+    cands = []
+    env = os.environ.get("NEXUS_REPO")
+    if env:
+        cands.append(env)
+    try:
+        with open(os.path.join(DATA_DIR, "repo.txt")) as f:
+            cands.append(f.read().strip())
+    except OSError:
+        pass
+    cands.append(os.path.join(os.path.expanduser("~"), "Nexus-Chat"))
+    for c in cands:
+        if c and os.path.isdir(os.path.join(c, ".git")):
+            return c
+    return None
+
+
+def installed_app_cmd():
+    """Command that launches the installed app, for the Update
+    window's Relaunch button. None if the install is not where
+    the installers put it."""
+    if IS_WINDOWS:
+        path = os.path.join(os.path.dirname(DATA_DIR),
+                            "nexus-chat.py")
+        if not os.path.isfile(path):
+            return None
+        pyw = os.path.join(os.path.dirname(sys.executable),
+                           "pythonw.exe")
+        return [pyw if os.path.isfile(pyw) else sys.executable,
+                path]
+    path = os.path.join(os.path.expanduser("~"), ".local", "bin",
+                        "nexus-chat.py")
+    if not os.path.isfile(path):
+        repo = find_repo()
+        path = os.path.join(repo, "nexus-chat.py") if repo else None
+    if not path or not os.path.isfile(path):
+        return None
+    return [sys.executable, path]
+
+
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     lock_path = os.path.join(DATA_DIR, ".lock")
-    lock_file = open(lock_path, "w")
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    lock_file = acquire_lock(lock_path)
+    if lock_file is None:
         print("Nexus Chat is already running.")
         return
     import tkinter as tk
