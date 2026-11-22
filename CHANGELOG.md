@@ -5,6 +5,23 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.11.0 — 2026-11-21
+The Model Manager (the Ollama panel's new "Manage models"
+button): an ON THIS MACHINE list of everything installed,
+with sizes, and a catalog of optional models to download —
+the Qwen3s, GPT-OSS 20B, the Mistral family, Gemma 3 / 3n,
+the Qwen coders, and vision models (Gemma 3, Qwen3-VL,
+LLaVA, Moondream) — each with its real registry-verified
+download size and a note where a model is PC-class rather
+than Pi-class. Downloads stream from Ollama with live
+progress, one at a time, cancellable (a partial pull
+resumes), and a finished model lands in the header picker.
+Any installed model can be deleted (two-click confirm) —
+except the required one. And the required set is now just
+qwen2.5:3b: setup installs only it (a ~1.9 GB first
+install), and everything else is an optional download,
+the two Qwen3s included.
+
 ## 1.10.1 — 2026-11-21
 Fix (Windows): updating from inside the app no longer opens
 a terminal window. The app runs without a console, so the

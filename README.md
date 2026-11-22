@@ -40,17 +40,23 @@ machine — no accounts, no cloud, nothing leaves the Pi.
   and never compressed away. Compression only changes what the model
   sees; the saved log always keeps every word. The Memory window
   shows exactly what the model currently carries for the open chat.
-- **Streaming replies**, model picker (Qwen3 4B default, 1.7B fast
-  mode, qwen2.5:3b the non-thinking option), Stop button
-  mid-generation.
+- **Streaming replies**, model picker, Stop button
+  mid-generation. Only **qwen2.5:3b** is required — setup
+  installs just that one; everything else is optional.
+- **Model Manager.** The controller's **Manage models** button
+  lists what's on the machine (with sizes) and a catalog of
+  optional downloads — Qwen3, GPT-OSS, Mistral, Gemma, the
+  coders, vision models — with live download progress and
+  delete for anything except the required model.
 - **Modern rounded theme.** Pill-shaped buttons, floating
   rounded cards for the header, sidebar and input bar, big soft
   chat bubbles, and every text and list panel in the windows
   wrapped in a rounded frame — no sharp corners anywhere.
 - **Ollama controller built in.** The header's **Ollama** button
   opens the controller panel: live service status, which model is
-  loaded and how much RAM it holds, and **Start**, **Stop** (frees
-  ALL its RAM) and **Unload model** buttons.
+  loaded and how much RAM it holds, **Start**, **Stop** (frees
+  ALL its RAM) and **Unload model** buttons, and the way into
+  the Model Manager.
 
 ## Setup on the Pi (Linux)
 

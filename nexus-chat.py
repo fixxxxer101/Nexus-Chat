@@ -64,7 +64,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.10.1"
+VERSION = "1.11.0"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -89,7 +89,51 @@ else:
 CHATS_DIR = os.path.join(DATA_DIR, "chats")
 MEMORY_PATH = os.path.join(DATA_DIR, "memory.json")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
-DEFAULT_MODELS = ["qwen3:4b", "qwen3:1.7b", "qwen2.5:3b"]
+DEFAULT_MODELS = ["qwen2.5:3b"]
+# Optional models, offered in the Download Models window (the
+# Ollama controller's "Download more models" button). Only
+# qwen2.5:3b above is required - setup installs just that one
+# - and everything here is an extra a person can pull onto
+# their own machine, the two Qwen3s included. Sizes are the
+# real download sizes, verified against Ollama's registry; a
+# model also needs roughly its size again in free RAM to run.
+# (tag, display name, category, download size, blurb)
+OPTIONAL_MODELS = [
+    ("qwen3:4b", "Qwen3 4B", "Chat", "2.5 GB",
+     "The thinking model: slower, shows its reasoning in a "
+     "collapsible trace."),
+    ("qwen3:1.7b", "Qwen3 1.7B", "Chat", "1.4 GB",
+     "The small, fast thinking model."),
+    ("gpt-oss:20b", "GPT-OSS 20B", "Chat", "13.8 GB",
+     "OpenAI's open-weight reasoning model. Strong - and "
+     "PC-class: it will not run on the Pi."),
+    ("mistral:7b", "Mistral 7B", "Chat", "4.4 GB",
+     "Fast, solid all-round chat."),
+    ("mistral-nemo:12b", "Mistral Nemo 12B", "Chat", "7.1 GB",
+     "The bigger Mistral: sharper, with a long context."),
+    ("gemma3n:e4b", "Gemma 3n E4B", "Chat", "9.8 GB",
+     "Google's Gemma 3n, built to run on-device. (There is "
+     "no Gemma 4 - 3 and 3n are the current line.)"),
+    ("qwen2.5-coder:7b", "Qwen2.5 Coder 7B", "Coding", "4.7 GB",
+     "A coder that fits almost anywhere."),
+    ("qwen2.5-coder:14b", "Qwen2.5 Coder 14B", "Coding",
+     "9.0 GB", "The sharper coder, if you have the RAM."),
+    ("qwen3-coder:30b", "Qwen3 Coder 30B", "Coding", "18.6 GB",
+     "The flagship coder. Needs a big machine."),
+    ("gemma3:4b", "Gemma 3 4B", "Vision", "3.3 GB",
+     "Gemma 3: chat that can also see images."),
+    ("gemma3:12b", "Gemma 3 12B", "Vision", "8.2 GB",
+     "Gemma 3 at 12B: stronger chat and vision."),
+    ("qwen3-vl:4b", "Qwen3-VL 4B", "Vision", "3.3 GB",
+     "Qwen3 vision-language: describe and answer about "
+     "images."),
+    ("qwen3-vl:8b", "Qwen3-VL 8B", "Vision", "6.2 GB",
+     "Qwen3 vision-language, the bigger pair of eyes."),
+    ("llava:7b", "LLaVA 7B", "Vision", "4.7 GB",
+     "The classic image-chat model."),
+    ("moondream:1.8b", "Moondream 1.8B", "Vision", "1.7 GB",
+     "A tiny vision model, very light on RAM."),
+]
 NUM_CTX = 4096
 # context budget (rough tokens, chars/4): compress when the assembled
 # context passes COMPRESS_AT; always keep the last KEEP_RAW messages
@@ -897,10 +941,11 @@ class App:
         self._wrap_labels = []         # labels needing wraplength updates
         self._cur = None               # streaming block state
         self.model = tk.StringVar(value=self.store.settings.get(
-            "model", "qwen3:4b"))
+            "model", "qwen2.5:3b"))
         self._at_bottom = True
         self._ctl = None               # Ollama controller panel state
         self._upd = None               # Update window state
+        self._mdl = None               # Download Models window state
 
         root.title("%s v%s" % (APP_NAME, VERSION))
         root.geometry("1040x700")
@@ -1670,6 +1715,454 @@ class App:
         self.store.save_settings()
         self.root.destroy()
 
+    # ---- model manager -------------------------------------------------
+    # Download optional models and delete the ones you no longer
+    # want, opened from the Ollama controller. Downloads: one at
+    # a time, streamed from Ollama's /api/pull with live
+    # progress; cancelling closes the stream (a partial pull
+    # resumes where it left off next time). Deletes: any model
+    # except the one required model, behind a two-click confirm.
+    # A finished download or a delete refreshes the header
+    # picker through the same models event as the poll.
+
+    def open_models(self):
+        tk = self.tk
+        if self._mdl is not None:
+            try:
+                self._mdl["win"].deiconify()
+                self._mdl["win"].lift()
+                return
+            except Exception:
+                self._mdl = None
+        win = tk.Toplevel(self.root)
+        win.title("Model Manager")
+        win.geometry("580x620")
+        win.minsize(500, 460)
+        win.configure(bg=BG)
+        mdl = {"win": win, "queue": queue.Queue(), "rows": {},
+               "busy": None, "resp": None, "cancelled": False,
+               "drain_id": None}
+        self._mdl = mdl
+
+        head = BubbleFrame(win, fill=PANEL, outline=BORDER,
+                           radius=RADIUS_CARD, bg=BG, height=56)
+        head.pack(side="top", fill="x", padx=10, pady=(10, 0))
+        head.pack_propagate(False)
+        tk.Label(head, text="MODEL MANAGER", bg=PANEL, fg=GREEN,
+                 font=(FONT, 13, "bold")).pack(side="left", padx=16,
+                                               pady=14)
+        mdl["count"] = tk.Label(head, text="", bg=PANEL,
+                                fg=GREEN_DIM, font=(FONT, 10))
+        mdl["count"].pack(side="right", padx=14)
+        tk.Label(win, text="Download optional models, or delete "
+                           "the ones you no longer want. Only "
+                           "qwen2.5:3b is required - setup "
+                           "installs just that one, and it "
+                           "cannot be deleted. Download sizes "
+                           "shown; a model also needs roughly "
+                           "its size again in free RAM to run, "
+                           "so the big ones are PC-class, not "
+                           "Pi-class.",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9), justify="left",
+                 wraplength=540).pack(anchor="w", padx=14,
+                                      pady=(10, 4))
+
+        wrap = tk.Frame(win, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=10, pady=(2, 4))
+        canvas = tk.Canvas(wrap, bg=BG, bd=0, highlightthickness=0)
+        sb = RoundedScrollbar(wrap, command=canvas.yview, bg=BG)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", padx=(4, 0))
+        canvas.pack(side="left", fill="both", expand=True)
+        flow = tk.Frame(canvas, bg=BG)
+        flow_win = canvas.create_window((0, 0), window=flow,
+                                        anchor="nw")
+        flow.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(
+            flow_win, width=e.width))
+
+        def wheel(e):
+            if e.num == 4:
+                canvas.yview_scroll(-3, "units")
+            elif e.num == 5:
+                canvas.yview_scroll(3, "units")
+            else:
+                canvas.yview_scroll(int(-e.delta / 40) or
+                                    (-3 if e.delta > 0 else 3),
+                                    "units")
+            # stop the app's global wheel binding from also
+            # scrolling the chat behind this window
+            return "break"
+
+        def bind_wheel(w_):
+            w_.bind("<MouseWheel>", wheel)
+            w_.bind("<Button-4>", wheel)
+            w_.bind("<Button-5>", wheel)
+            for c in w_.winfo_children():
+                bind_wheel(c)
+
+        mdl["bind_wheel"] = bind_wheel
+        bind_wheel(sb)
+
+        tk.Label(flow, text="ON THIS MACHINE", bg=BG,
+                 fg=ORANGE_DIM, font=(FONT, 9, "bold")).pack(
+                     anchor="w", padx=6, pady=(12, 4))
+        mdl["inst_frame"] = tk.Frame(flow, bg=BG)
+        mdl["inst_frame"].pack(fill="x")
+        tk.Label(mdl["inst_frame"], text="Checking...",
+                 bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
+                     anchor="w", padx=6)
+
+        last_cat = None
+        for tag, name, cat, size, blurb in OPTIONAL_MODELS:
+            if cat != last_cat:
+                last_cat = cat
+                tk.Label(flow, text=cat.upper(), bg=BG,
+                         fg=ORANGE_DIM,
+                         font=(FONT, 9, "bold")).pack(
+                             anchor="w", padx=6, pady=(12, 4))
+            rowf = BubbleFrame(flow, fill=PANEL, outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            row = {"tag": tag, "state": "unknown"}
+            btn = RoundedButton(
+                rowf, text="Download", kind="ghost",
+                font=(FONT, 10, "bold"), bg=PANEL,
+                command=lambda r=row: self._mdl_click(mdl, r))
+            btn.pack(side="right", padx=10, pady=10)
+            status = tk.Label(rowf, text="", bg=PANEL,
+                              fg=ORANGE_DIM, font=(FONT, 8))
+            status.pack(side="right", padx=(0, 2))
+            tk.Label(rowf, text=name, bg=PANEL, fg=GREEN,
+                     font=(FONT, 11, "bold")).pack(anchor="w",
+                                                   padx=12,
+                                                   pady=(8, 0))
+            tk.Label(rowf, text="%s - %s" % (tag, size), bg=PANEL,
+                     fg=GREEN_DIM, font=(MONO, 8)).pack(anchor="w",
+                                                        padx=12)
+            tk.Label(rowf, text=blurb, bg=PANEL, fg=GREEN_DIM,
+                     font=(FONT, 9), justify="left",
+                     wraplength=320).pack(anchor="w", padx=12,
+                                          pady=(0, 8))
+            row["btn"] = btn
+            row["status"] = status
+            btn.set_enabled(False)
+            mdl["rows"][tag] = row
+
+        bind_wheel(canvas)
+        bind_wheel(flow)
+
+        mdl["note"] = tk.Label(win, text="Checking what's "
+                                         "installed...",
+                               bg=BG, fg=ORANGE_DIM, font=(FONT, 9),
+                               justify="left", wraplength=540)
+        mdl["note"].pack(anchor="w", padx=14, pady=(0, 10))
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: self._mdl_close(mdl))
+        self._mdl_refresh(mdl)
+        self._mdl_drain(mdl)
+
+    def _mdl_close(self, mdl):
+        if self._mdl is not mdl:
+            return
+        self._mdl = None
+        mdl["cancelled"] = True
+        if mdl.get("resp") is not None:
+            try:
+                mdl["resp"].close()
+            except Exception:
+                pass
+        if mdl.get("drain_id"):
+            try:
+                self.root.after_cancel(mdl["drain_id"])
+            except Exception:
+                pass
+        try:
+            mdl["win"].destroy()
+        except Exception:
+            pass
+
+    def _mdl_refresh(self, mdl):
+        def work():
+            try:
+                models = api_get("/api/tags").get("models", [])
+                mdl["queue"].put(("tags", models))
+            except Exception:
+                mdl["queue"].put(("tags", None))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _mdl_render_installed(self, mdl, models):
+        tk = self.tk
+        frame = mdl["inst_frame"]
+        for child in frame.winfo_children():
+            child.destroy()
+        if models is None:
+            tk.Label(frame, text="Ollama is not running.",
+                     bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
+                         anchor="w", padx=6)
+            return
+        if not models:
+            tk.Label(frame, text="No models installed.",
+                     bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
+                         anchor="w", padx=6)
+            return
+        for mm in sorted(models, key=lambda x: x["name"]):
+            tag = mm["name"]
+            rowf = BubbleFrame(frame, fill=PANEL, outline=BORDER,
+                               radius=RADIUS_PANEL, bg=BG)
+            rowf.pack(fill="x", padx=4, pady=3)
+            row = {}
+            if tag == DEFAULT_MODELS[0]:
+                tk.Label(rowf, text="REQUIRED", bg=PANEL,
+                         fg=ORANGE_DIM,
+                         font=(FONT, 8, "bold")).pack(
+                             side="right", padx=12)
+            else:
+                btn = RoundedButton(
+                    rowf, text="Delete", kind="quiet",
+                    font=(FONT, 10, "bold"), bg=PANEL,
+                    command=lambda t=tag, r=row:
+                        self._mdl_delete_click(mdl, t, r))
+                btn.pack(side="right", padx=10, pady=10)
+                row["btn"] = btn
+            status = tk.Label(rowf, text="", bg=PANEL,
+                              fg=ORANGE_DIM, font=(FONT, 8))
+            status.pack(side="right", padx=(0, 2))
+            row["status"] = status
+            tk.Label(rowf, text=tag, bg=PANEL, fg=GREEN,
+                     font=(FONT, 11, "bold")).pack(anchor="w",
+                                                   padx=12,
+                                                   pady=(8, 0))
+            tk.Label(rowf, text="%s on disk" % gb(mm.get(
+                "size", 0)), bg=PANEL, fg=GREEN_DIM,
+                font=(FONT, 8)).pack(anchor="w", padx=12,
+                                     pady=(0, 8))
+            mdl["bind_wheel"](rowf)
+
+    def _mdl_delete_click(self, mdl, tag, row):
+        if tag == DEFAULT_MODELS[0]:
+            return          # the required model is never deleted
+        if row.get("armed_until", 0) > time.time():
+            row["btn"].set_enabled(False)
+            row["btn"].configure(text="Deleting...")
+            row["status"].configure(text="")
+            threading.Thread(target=self._mdl_delete,
+                             args=(mdl, tag), daemon=True).start()
+        else:
+            row["armed_until"] = time.time() + 5
+            row["btn"].configure(text="Really delete?")
+            row["status"].configure(text="click again to confirm")
+
+    def _mdl_delete(self, mdl, tag):
+        try:
+            req = urllib.request.Request(
+                OLLAMA + "/api/delete", method="DELETE",
+                data=json.dumps({"name": tag}).encode("utf-8"),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                r.read()
+            try:
+                names = [mm["name"] for mm in
+                         api_get("/api/tags").get("models", [])]
+                self.events.put(("models", names))
+            except Exception:
+                pass
+            mdl["queue"].put(("deleted", tag))
+        except Exception as e:
+            mdl["queue"].put(("delete_error", (tag, str(e))))
+
+    def _mdl_set_row(self, mdl, row, state):
+        row["state"] = state
+        if state == "installed":
+            row["btn"].configure(text="Installed")
+            row["btn"].set_enabled(False)
+            row["status"].configure(text="")
+        elif state == "ready":
+            row["btn"].configure(text="Download")
+            row["btn"].set_enabled(mdl["busy"] is None)
+        elif state == "unknown":
+            row["btn"].set_enabled(False)
+
+    def _mdl_click(self, mdl, row):
+        if mdl["busy"] is row:
+            mdl["cancelled"] = True
+            if mdl.get("resp") is not None:
+                try:
+                    mdl["resp"].close()
+                except Exception:
+                    pass
+            row["status"].configure(text="Cancelling...")
+            return
+        if mdl["busy"] is not None or row["state"] != "ready":
+            return
+        mdl["busy"] = row
+        mdl["cancelled"] = False
+        for r in mdl["rows"].values():
+            if r is not row and r["state"] == "ready":
+                r["btn"].set_enabled(False)
+        row["btn"].configure(text="Cancel")
+        row["status"].configure(text="Starting...")
+        mdl["note"].configure(text="Downloading %s..." % row["tag"])
+        threading.Thread(target=self._mdl_pull, args=(mdl, row),
+                         daemon=True).start()
+
+    def _mdl_pull(self, mdl, row):
+        tag = row["tag"]
+        layers = {}
+        try:
+            req = urllib.request.Request(
+                OLLAMA + "/api/pull",
+                data=json.dumps({"name": tag,
+                                 "stream": True}).encode("utf-8"),
+                headers={"Content-Type": "application/json"})
+            resp = urllib.request.urlopen(req, timeout=1800)
+            mdl["resp"] = resp
+            try:
+                for raw in resp:
+                    if mdl["cancelled"]:
+                        break
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    ev = json.loads(line.decode("utf-8"))
+                    if ev.get("error"):
+                        mdl["queue"].put(
+                            ("error", (tag, str(ev["error"]))))
+                        return
+                    d = ev.get("digest")
+                    if d and ev.get("total"):
+                        layers[d] = (ev.get("completed", 0),
+                                     ev["total"])
+                    done = sum(c for c, _ in layers.values())
+                    total = sum(t for _, t in layers.values())
+                    mdl["queue"].put(
+                        ("progress", (tag, ev.get("status", ""),
+                                      done, total)))
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+                mdl["resp"] = None
+            if mdl["cancelled"]:
+                mdl["queue"].put(("cancelled", tag))
+                return
+            try:
+                names = [mm["name"] for mm in
+                         api_get("/api/tags").get("models", [])]
+                self.events.put(("models", names))
+            except Exception:
+                pass
+            mdl["queue"].put(("done", tag))
+        except Exception as e:
+            if mdl["cancelled"]:
+                mdl["queue"].put(("cancelled", tag))
+            else:
+                mdl["queue"].put(("error", (tag, str(e))))
+
+    def _mdl_drain(self, mdl):
+        if self._mdl is not mdl:
+            return
+        try:
+            while True:
+                kind, payload = mdl["queue"].get_nowait()
+                if kind == "tags":
+                    self._mdl_render_installed(mdl, payload)
+                    if payload is None:
+                        mdl["note"].configure(
+                            text="Ollama is not running - start "
+                                 "it from the Ollama panel, then "
+                                 "reopen this window.")
+                        for r in mdl["rows"].values():
+                            self._mdl_set_row(mdl, r, "unknown")
+                    else:
+                        have = set(mm["name"] for mm in payload)
+                        n = 0
+                        for r in mdl["rows"].values():
+                            if r["tag"] in have:
+                                self._mdl_set_row(mdl, r,
+                                                  "installed")
+                                n += 1
+                            else:
+                                self._mdl_set_row(mdl, r, "ready")
+                        mdl["count"].configure(
+                            text="%d of %d here" % (n,
+                                                    len(OPTIONAL_MODELS)))
+                        mdl["note"].configure(
+                            text="Downloads go to this machine "
+                                 "only. One at a time; a "
+                                 "cancelled pull resumes where "
+                                 "it stopped.")
+                elif kind == "progress":
+                    tag, status, done, total = payload
+                    row = mdl["rows"].get(tag)
+                    if row is not None:
+                        if total:
+                            row["status"].configure(
+                                text="%d%%" % int(
+                                    100.0 * done / total))
+                        mdl["note"].configure(
+                            text="%s - %s" % (tag, status))
+                elif kind == "done":
+                    row = mdl["rows"].get(payload)
+                    mdl["busy"] = None
+                    if row is not None:
+                        self._mdl_set_row(mdl, row, "installed")
+                    for r in mdl["rows"].values():
+                        if r["state"] == "ready":
+                            r["btn"].set_enabled(True)
+                    n = sum(1 for r in mdl["rows"].values()
+                            if r["state"] == "installed")
+                    mdl["count"].configure(
+                        text="%d of %d here" % (n,
+                                                len(OPTIONAL_MODELS)))
+                    mdl["note"].configure(
+                        text="%s installed - it is in the model "
+                             "picker now." % payload)
+                    self._mdl_refresh(mdl)
+                elif kind == "deleted":
+                    mdl["note"].configure(
+                        text="%s deleted - its disk space is "
+                             "free again." % payload)
+                    self._mdl_refresh(mdl)
+                elif kind == "delete_error":
+                    tag, msg = payload
+                    mdl["note"].configure(
+                        text="Could not delete %s: %s"
+                             % (tag, msg))
+                    self._mdl_refresh(mdl)
+                elif kind == "cancelled":
+                    row = mdl["rows"].get(payload)
+                    mdl["busy"] = None
+                    if row is not None:
+                        self._mdl_set_row(mdl, row, "ready")
+                        row["status"].configure(text="Cancelled")
+                    for r in mdl["rows"].values():
+                        if r["state"] == "ready":
+                            r["btn"].set_enabled(True)
+                    mdl["note"].configure(
+                        text="Download cancelled. Pulling it "
+                             "again resumes where it stopped.")
+                elif kind == "error":
+                    tag, msg = payload
+                    row = mdl["rows"].get(tag)
+                    mdl["busy"] = None
+                    if row is not None:
+                        self._mdl_set_row(mdl, row, "ready")
+                        row["status"].configure(text="Failed")
+                    for r in mdl["rows"].values():
+                        if r["state"] == "ready":
+                            r["btn"].set_enabled(True)
+                    mdl["note"].configure(
+                        text="Download of %s failed: %s"
+                             % (tag, msg))
+        except queue.Empty:
+            pass
+        mdl["drain_id"] = self.root.after(90,
+                                          lambda: self._mdl_drain(mdl))
+
     # ---- in-app update -------------------------------------------------
     # The sidebar's Update button: runs the platform setup inside
     # the git checkout (setup.sh / setup.bat), which pulls the
@@ -1948,6 +2441,11 @@ class App:
             activestyle="none", height=7)
         ctl["models_box"].pack(fill="both", expand=True, padx=8,
                                pady=6)
+        RoundedButton(win, text="Manage models",
+                      kind="ghost", font=(FONT, 10, "bold"),
+                      command=self.open_models).pack(anchor="w",
+                                                     padx=14,
+                                                     pady=(2, 6))
         tk.Label(win, text="Stop frees ALL the RAM Ollama holds. "
                            "Start brings the service back; a model "
                            "loads on first use. Unload frees the "

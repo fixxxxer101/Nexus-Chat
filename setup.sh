@@ -6,9 +6,10 @@
 #                    one command is also the whole update
 #   1. Ollama        (skipped if already installed)
 #   2. Ollama API up (starts the service if it is not answering)
-#   3. Models        qwen3:4b + qwen3:1.7b + qwen2.5:3b (each
-#                    skipped if pulled; qwen2.5:3b never thinks -
-#                    it is the non-thinking option)
+#   3. Models        qwen2.5:3b only - the one required model
+#                    (skipped if pulled). Everything else is
+#                    optional, from the app's Download Models
+#                    window.
 #   4. The app       via install.sh (desktop icon included)
 #
 # Idempotent by design: every step checks what already exists and
@@ -19,7 +20,7 @@
 # Usage:  bash setup.sh
 set -u
 SRC=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-MODELS="qwen3:4b qwen3:1.7b qwen2.5:3b"
+MODELS="qwen2.5:3b"
 API="http://localhost:11434/api/tags"
 
 say()  { printf '\n[setup] %s\n' "$*"; }
