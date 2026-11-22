@@ -1550,9 +1550,14 @@ class App:
         lwrap = BubbleFrame(win, fill=PANEL2, outline=BORDER,
                             radius=RADIUS_PANEL, bg=BG)
         lwrap.pack(fill="both", expand=True, padx=12, pady=8)
+        # height=10 matters: a Text with no height asks for 24
+        # lines, which starved the pack and clipped the button
+        # row clean out of the window (measured: buttons unmapped,
+        # 1px tall). The frame expands, so the log still fills
+        # whatever space the window gives it.
         log_view = tk.Text(lwrap, bg=PANEL2, fg=GREEN_DIM, bd=0,
                            highlightthickness=0, font=(MONO, 9),
-                           wrap="word", state="disabled")
+                           height=10, wrap="word", state="disabled")
         log_view.pack(fill="both", expand=True, padx=9, pady=7)
         status = tk.Label(win, text="", bg=BG, fg=ORANGE_DIM,
                           font=(FONT, 9))
