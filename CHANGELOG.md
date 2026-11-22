@@ -5,6 +5,16 @@ release is 1.0.0, a feature bumps the middle number, a fix
 bumps the last. Every change from 1.9.0 on bumps the version
 in the same commit.
 
+## 1.20.1 — 2026-11-21
+Model Locations scanning, made visible: a Scan now button
+re-scans on demand (adding a folder and opening the
+manager already scan automatically - no restart has ever
+been needed), every added folder shows how many GGUF
+files the scan found under it, the scan is written to the
+app log, and linked subfolders (junctions/symlinks) are
+now followed, with a visited-folder guard so a link cycle
+can't loop the scan.
+
 ## 1.20.0 — 2026-11-21
 Model Locations: GGUF models that already live somewhere
 else - an LM Studio folder, a ComfyUI folder, any folder -

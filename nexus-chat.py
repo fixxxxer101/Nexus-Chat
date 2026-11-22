@@ -75,7 +75,7 @@ APP_NAME = "Nexus Chat"
 # against the git history (see CHANGELOG.md): v1 itself was
 # 1.0.0, and each feature/fix since earned its bump, so the
 # release that added versioning is 1.9.0, not 1.0.0.
-VERSION = "1.20.0"
+VERSION = "1.20.1"
 IS_WINDOWS = os.name == "nt"
 # On Windows, a GUI app (pythonw, no console of its own) that
 # spawns a console program gets a brand-new terminal window
@@ -950,7 +950,15 @@ def scan_model_dirs(dirs):
     for base in dirs:
         if not base or not os.path.isdir(base):
             continue
-        for root, _sub, files in os.walk(base):
+        visited = {os.path.realpath(base)}
+        for root, sub, files in os.walk(base, followlinks=True):
+            keep = []
+            for d in sub:
+                rd = os.path.realpath(os.path.join(root, d))
+                if rd not in visited:
+                    visited.add(rd)
+                    keep.append(d)
+            sub[:] = keep
             for fn in sorted(files):
                 if not fn.lower().endswith(".gguf"):
                     continue
@@ -3050,10 +3058,20 @@ class App:
     def _loc_render(self, mdl):
         tk = self.tk
         dirs = self.store.settings.get("model_dirs") or []
+        entries = scan_model_dirs(dirs)
+        mdl["found"] = entries
+        mdl["scan_dirs"] = len(dirs)
+        mdl["scan_files"] = len(entries)
+        log("model scan: %d folder(s), %d GGUF file(s): %s"
+            % (len(dirs), len(entries),
+               "; ".join(dirs) or "none"))
         frame = mdl["loc_frame"]
         for child in frame.winfo_children():
             child.destroy()
         for d in dirs:
+            prefix = d if d.endswith(os.sep) else d + os.sep
+            n = sum(1 for e in entries
+                    if e["path"].startswith(prefix))
             rowf = BubbleFrame(frame, fill=PANEL, outline=BORDER,
                                radius=RADIUS_PANEL, bg=BG)
             rowf.pack(fill="x", padx=4, pady=3)
@@ -3066,7 +3084,14 @@ class App:
             tk.Label(rowf, text=d, bg=PANEL, fg=GREEN,
                      font=(MONO, 9), justify="left",
                      wraplength=400, anchor="w").pack(
-                         anchor="w", padx=12, pady=8, fill="x")
+                         anchor="w", padx=12, pady=(8, 0),
+                         fill="x")
+            tk.Label(rowf,
+                     text=("%d GGUF file(s) found here" % n)
+                     if n else "No GGUF files found here",
+                     bg=PANEL, fg=GREEN_DIM,
+                     font=(FONT, 8)).pack(anchor="w", padx=12,
+                                          pady=(0, 8))
             mdl["bind_wheel"](rowf)
         addf = tk.Frame(frame, bg=BG)
         addf.pack(fill="x", padx=4, pady=(2, 0))
@@ -3075,12 +3100,15 @@ class App:
             font=(FONT, 10, "bold"), bg=BG,
             command=lambda: self._loc_add_folder(mdl)).pack(
                 side="left")
+        RoundedButton(
+            addf, text="Scan now", kind="ghost",
+            font=(FONT, 10, "bold"), bg=BG,
+            command=lambda: self._loc_scan_now(mdl)).pack(
+                side="left", padx=(8, 0))
         reg = self._local_registry()
         by_source = {}
         for api_name, info in reg.items():
             by_source[info.get("source", "")] = api_name
-        entries = scan_model_dirs(dirs)
-        mdl["found"] = entries
         mdl["loc_rows"] = {}
         fframe = mdl["found_frame"]
         for child in fframe.winfo_children():
@@ -3092,9 +3120,16 @@ class App:
             return
         if not entries:
             tk.Label(fframe, text="No GGUF files found in "
-                                  "those folders.",
-                     bg=BG, fg=GREEN_DIM, font=(FONT, 9)).pack(
-                         anchor="w", padx=6)
+                                  "those folders. LM Studio "
+                                  "models are .gguf files, "
+                                  "usually inside a publisher "
+                                  "subfolder - if the count "
+                                  "above says 0, the folder "
+                                  "added is not the one "
+                                  "holding them.",
+                     bg=BG, fg=GREEN_DIM, font=(FONT, 9),
+                     justify="left",
+                     wraplength=500).pack(anchor="w", padx=6)
             return
         for entry in entries:
             rowf = BubbleFrame(fframe, fill=PANEL,
@@ -3148,6 +3183,13 @@ class App:
             row["meta"] = last
             mdl["loc_rows"][entry["path"]] = row
             mdl["bind_wheel"](rowf)
+
+    def _loc_scan_now(self, mdl):
+        self._loc_render(mdl)
+        mdl["note"].configure(
+            text="Scanned %d folder(s) - %d GGUF file(s) "
+                 "found." % (mdl.get("scan_dirs", 0),
+                             mdl.get("scan_files", 0)))
 
     def _loc_add_folder(self, mdl):
         from tkinter import filedialog
